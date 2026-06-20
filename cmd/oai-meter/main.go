@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/cornelia/oai-response-meter/internal/app"
 )
 
 func main() {
@@ -16,6 +18,9 @@ func run(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stdout, "oai-meter captures OpenAI usage metadata through mitmproxy.")
 		return nil
+	}
+	if args[0] == "run" {
+		return app.RunCommand(args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
