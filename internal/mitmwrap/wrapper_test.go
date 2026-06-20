@@ -54,18 +54,19 @@ func TestResolveMitmdumpReportsMissingBinary(t *testing.T) {
 
 func TestCommandBuildsMitmdumpArgsAndEnv(t *testing.T) {
 	cmd, err := Command(context.Background(), Config{
-		MitmdumpPath: "/tmp/mitmdump",
-		AddonPath:    "/tmp/addon.py",
-		SocketPath:   "/tmp/oai-meter.sock",
-		ListenHost:   "127.0.0.1",
-		ListenPort:   "18080",
-		QueueSize:    123,
-		Quiet:        true,
+		MitmdumpPath:  "/tmp/mitmdump",
+		AddonPath:     "/tmp/addon.py",
+		SocketPath:    "/tmp/oai-meter.sock",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    "18080",
+		QueueSize:     123,
+		Quiet:         true,
+		UpstreamProxy: "http://127.0.0.1:7890",
 	})
 	if err != nil {
 		t.Fatalf("Command() error = %v", err)
 	}
-	wantArgs := []string{"/tmp/mitmdump", "-s", "/tmp/addon.py", "--listen-host", "127.0.0.1", "--listen-port", "18080", "--quiet"}
+	wantArgs := []string{"/tmp/mitmdump", "-s", "/tmp/addon.py", "--listen-host", "127.0.0.1", "--listen-port", "18080", "--mode", "upstream:http://127.0.0.1:7890", "--quiet"}
 	if strings.Join(cmd.Args, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("Args = %#v, want %#v", cmd.Args, wantArgs)
 	}

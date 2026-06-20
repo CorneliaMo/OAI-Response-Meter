@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,15 +20,21 @@ import (
 )
 
 type RunConfig struct {
-	Root       string
-	Mitmdump   string
-	Socket     string
-	DB         string
-	JSONL      string
-	ListenHost string
-	ListenPort string
-	QueueSize  int
-	Verbose    bool
+	Root          string
+	Mitmdump      string
+	Socket        string
+	DB            string
+	JSONL         string
+	ListenHost    string
+	ListenPort    string
+	QueueSize     int
+	Verbose       bool
+	ConfigPath    string
+	UpstreamProxy string
+}
+
+type fileConfig struct {
+	UpstreamProxy string `json:"upstream_proxy"`
 }
 
 func RunCommand(args []string) error {
@@ -44,6 +53,12 @@ func Run(ctx context.Context, config RunConfig) error {
 		}
 		config.Root = root
 	}
+	if err := applyConfigFile(&config); err != nil {
+		return err
+	}
+	if err := applyProxyEnv(&config); err != nil {
+		return err
+	}
 	fillDefaults(&config)
 
 	mitmdumpPath, err := mitmwrap.ResolveMitmdump(config.Root, config.Mitmdump)
@@ -56,6 +71,11 @@ func Run(ctx context.Context, config RunConfig) error {
 		fmt.Fprintf(os.Stderr, "[app] addon=%s\n", filepath.Join(config.Root, "mitm", "addon.py"))
 		fmt.Fprintf(os.Stderr, "[app] socket=%s db=%s jsonl=%s\n", config.Socket, config.DB, config.JSONL)
 		fmt.Fprintf(os.Stderr, "[app] proxy listen=%s:%s queue_size=%d\n", config.ListenHost, config.ListenPort, config.QueueSize)
+		if config.UpstreamProxy == "" {
+			fmt.Fprintln(os.Stderr, "[app] upstream_proxy=<none>")
+		} else {
+			fmt.Fprintf(os.Stderr, "[app] upstream_proxy=%s\n", config.UpstreamProxy)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -85,14 +105,14 @@ func Run(ctx context.Context, config RunConfig) error {
 	}
 
 	cmd, err := mitmwrap.Command(ctx, mitmwrap.Config{
-		MitmdumpPath: mitmdumpPath,
-		AddonPath:    filepath.Join(config.Root, "mitm", "addon.py"),
-		SocketPath:   config.Socket,
-		ListenHost:   config.ListenHost,
-		ListenPort:   config.ListenPort,
-		QueueSize:    config.QueueSize,
-		Quiet:        true,
-		Verbose:      config.Verbose,
+		MitmdumpPath:  mitmdumpPath,
+		AddonPath:     filepath.Join(config.Root, "mitm", "addon.py"),
+		SocketPath:    config.Socket,
+		ListenHost:    config.ListenHost,
+		ListenPort:    config.ListenPort,
+		QueueSize:     config.QueueSize,
+		Quiet:         true,
+		UpstreamProxy: config.UpstreamProxy,
 	})
 	if err != nil {
 		stop()
@@ -122,6 +142,8 @@ func parseRunConfig(args []string) (RunConfig, error) {
 	fs.StringVar(&config.Socket, "socket", "", "unix datagram socket path")
 	fs.StringVar(&config.DB, "db", "", "sqlite database path")
 	fs.StringVar(&config.JSONL, "jsonl", "", "jsonl audit log path")
+	fs.StringVar(&config.ConfigPath, "config", "", "json config file path")
+	fs.StringVar(&config.UpstreamProxy, "upstream-proxy", "", "upstream explicit HTTP(S) proxy URL")
 	fs.StringVar(&config.ListenHost, "listen-host", "127.0.0.1", "mitmproxy listen host")
 	fs.StringVar(&config.ListenPort, "listen-port", "8080", "mitmproxy listen port")
 	fs.IntVar(&config.QueueSize, "queue-size", 10000, "addon queue size")
@@ -130,6 +152,67 @@ func parseRunConfig(args []string) (RunConfig, error) {
 		return RunConfig{}, err
 	}
 	return config, nil
+}
+
+func applyConfigFile(config *RunConfig) error {
+	if config.ConfigPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(config.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	var file fileConfig
+	if err := json.Unmarshal(data, &file); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if config.UpstreamProxy == "" && file.UpstreamProxy != "" {
+		config.UpstreamProxy = file.UpstreamProxy
+	}
+	return validateUpstreamProxy(config.UpstreamProxy)
+}
+
+func applyProxyEnv(config *RunConfig) error {
+	if config.UpstreamProxy != "" {
+		return validateUpstreamProxy(config.UpstreamProxy)
+	}
+	for _, name := range []string{
+		"OAI_METER_UPSTREAM_PROXY",
+		"HTTPS_PROXY",
+		"https_proxy",
+		"HTTP_PROXY",
+		"http_proxy",
+		"ALL_PROXY",
+		"all_proxy",
+	} {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		if err := validateUpstreamProxy(value); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		config.UpstreamProxy = value
+		return nil
+	}
+	return nil
+}
+
+func validateUpstreamProxy(proxy string) error {
+	if strings.TrimSpace(proxy) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(proxy)
+	if err != nil {
+		return fmt.Errorf("invalid upstream proxy %q: %w", proxy, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("upstream proxy %q must use http:// or https://", proxy)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("upstream proxy %q must include a host", proxy)
+	}
+	return nil
 }
 
 func fillDefaults(config *RunConfig) {

@@ -11,14 +11,14 @@ import (
 )
 
 type Config struct {
-	MitmdumpPath string
-	AddonPath    string
-	SocketPath   string
-	ListenHost   string
-	ListenPort   string
-	QueueSize    int
-	Quiet        bool
-	Verbose      bool
+	MitmdumpPath  string
+	AddonPath     string
+	SocketPath    string
+	ListenHost    string
+	ListenPort    string
+	QueueSize     int
+	Quiet         bool
+	UpstreamProxy string
 }
 
 func DefaultMitmdumpPath(root string) string {
@@ -65,6 +65,9 @@ func Command(ctx context.Context, config Config) (*exec.Cmd, error) {
 		"--listen-host", config.ListenHost,
 		"--listen-port", config.ListenPort,
 	}
+	if config.UpstreamProxy != "" {
+		args = append(args, "--mode", "upstream:"+config.UpstreamProxy)
+	}
 	if config.Quiet {
 		args = append(args, "--quiet")
 	}
@@ -73,13 +76,8 @@ func Command(ctx context.Context, config Config) (*exec.Cmd, error) {
 		"OAI_METER_SOCKET="+config.SocketPath,
 		fmt.Sprintf("OAI_METER_QUEUE_SIZE=%d", config.QueueSize),
 	)
-	if config.Verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	} else {
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-	}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	cmd.Stdin = os.Stdin
 	return cmd, nil
 }

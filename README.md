@@ -53,6 +53,8 @@ Useful flags:
 --socket        Unix datagram socket path, default /tmp/oai-meter.sock
 --db            SQLite path, default data/usage.db
 --jsonl         JSONL audit path, default data/usage.jsonl
+--config        JSON config file path
+--upstream-proxy upstream explicit HTTP(S) proxy URL
 --listen-host   mitmdump listen host, default 127.0.0.1
 --listen-port   mitmdump listen port, default 8080
 --queue-size    Python addon queue size, default 10000
@@ -66,6 +68,43 @@ cookies, or full WebSocket messages.
 
 The wrapper starts `mitmdump` in quiet mode so raw mitmproxy traffic logs do not
 mix into the meter output.
+
+## Upstream Proxy
+
+If your machine needs a proxy to reach OpenAI, configure an upstream proxy. The
+wrapper passes it to mitmdump as:
+
+```text
+--mode upstream:<proxy-url>
+```
+
+Resolution order:
+
+1. `--upstream-proxy`
+2. JSON config file passed with `--config`
+3. Environment variables:
+   `OAI_METER_UPSTREAM_PROXY`, `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`,
+   `http_proxy`, `ALL_PROXY`, `all_proxy`
+4. No upstream proxy, using mitmproxy's regular explicit HTTP(S) proxy mode
+
+Example:
+
+```bash
+go run ./cmd/oai-meter run \
+  --listen-port 8080 \
+  --upstream-proxy http://127.0.0.1:7890
+```
+
+Config file example:
+
+```json
+{
+  "upstream_proxy": "http://127.0.0.1:7890"
+}
+```
+
+Only `http://` and `https://` upstream proxies are accepted for mitmproxy
+upstream mode.
 
 ## Data Policy
 
