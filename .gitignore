@@ -1,0 +1,10 @@
+bin/*
+!bin/.gitkeep
+
+*.db
+*.db-*
+*.jsonl
+*.sock
+
+.DS_Store
+coverage.out
