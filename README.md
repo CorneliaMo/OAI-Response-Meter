@@ -56,7 +56,16 @@ Useful flags:
 --listen-host   mitmdump listen host, default 127.0.0.1
 --listen-port   mitmdump listen port, default 8080
 --queue-size    Python addon queue size, default 10000
+--verbose       print sanitized debug logs
 ```
+
+`--verbose` prints local meter logs such as the selected paths, received usage
+events, token counts, invalid datagrams, and SQLite batch write summaries. It
+does not print prompts, request bodies, response bodies, Authorization headers,
+cookies, or full WebSocket messages.
+
+The wrapper starts `mitmdump` in quiet mode so raw mitmproxy traffic logs do not
+mix into the meter output.
 
 ## Data Policy
 

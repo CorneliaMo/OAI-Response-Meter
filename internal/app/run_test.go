@@ -15,12 +15,16 @@ func TestParseRunConfig(t *testing.T) {
 		"--listen-host", "localhost",
 		"--listen-port", "18080",
 		"--queue-size", "123",
+		"--verbose",
 	})
 	if err != nil {
 		t.Fatalf("parseRunConfig() error = %v", err)
 	}
 	if config.Root != "/tmp/project" || config.ListenPort != "18080" || config.QueueSize != 123 {
 		t.Fatalf("parseRunConfig() = %+v", config)
+	}
+	if !config.Verbose {
+		t.Fatal("Verbose = false, want true")
 	}
 }
 

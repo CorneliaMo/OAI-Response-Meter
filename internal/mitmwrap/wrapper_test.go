@@ -60,11 +60,12 @@ func TestCommandBuildsMitmdumpArgsAndEnv(t *testing.T) {
 		ListenHost:   "127.0.0.1",
 		ListenPort:   "18080",
 		QueueSize:    123,
+		Quiet:        true,
 	})
 	if err != nil {
 		t.Fatalf("Command() error = %v", err)
 	}
-	wantArgs := []string{"/tmp/mitmdump", "-s", "/tmp/addon.py", "--listen-host", "127.0.0.1", "--listen-port", "18080"}
+	wantArgs := []string{"/tmp/mitmdump", "-s", "/tmp/addon.py", "--listen-host", "127.0.0.1", "--listen-port", "18080", "--quiet"}
 	if strings.Join(cmd.Args, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("Args = %#v, want %#v", cmd.Args, wantArgs)
 	}

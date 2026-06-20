@@ -30,12 +30,12 @@ func TestDecodeValidUsage(t *testing.T) {
 
 func TestDecodeRejectsInvalidUsage(t *testing.T) {
 	tests := map[string]string{
-		"bad json":           `{`,
-		"wrong schema":       `{"schema":2,"ts":"2026-06-20T12:00:00Z","transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
-		"missing timestamp":  `{"schema":1,"transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
-		"bad timestamp":      `{"schema":1,"ts":"bad","transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
+		"bad json":            `{`,
+		"wrong schema":        `{"schema":2,"ts":"2026-06-20T12:00:00Z","transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
+		"missing timestamp":   `{"schema":1,"transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
+		"bad timestamp":       `{"schema":1,"ts":"bad","transport":"sse","host":"api.openai.com","response_id":"resp_123"}`,
 		"missing response id": `{"schema":1,"ts":"2026-06-20T12:00:00Z","transport":"sse","host":"api.openai.com"}`,
-		"negative tokens":    `{"schema":1,"ts":"2026-06-20T12:00:00Z","transport":"sse","host":"api.openai.com","response_id":"resp_123","input_tokens":-1}`,
+		"negative tokens":     `{"schema":1,"ts":"2026-06-20T12:00:00Z","transport":"sse","host":"api.openai.com","response_id":"resp_123","input_tokens":-1}`,
 	}
 
 	for name, raw := range tests {

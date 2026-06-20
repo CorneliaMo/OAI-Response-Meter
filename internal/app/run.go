@@ -25,6 +25,7 @@ type RunConfig struct {
 	ListenHost string
 	ListenPort string
 	QueueSize  int
+	Verbose    bool
 }
 
 func RunCommand(args []string) error {
@@ -49,6 +50,13 @@ func Run(ctx context.Context, config RunConfig) error {
 	if err != nil {
 		return err
 	}
+	if config.Verbose {
+		fmt.Fprintf(os.Stderr, "[app] root=%s\n", config.Root)
+		fmt.Fprintf(os.Stderr, "[app] mitmdump=%s\n", mitmdumpPath)
+		fmt.Fprintf(os.Stderr, "[app] addon=%s\n", filepath.Join(config.Root, "mitm", "addon.py"))
+		fmt.Fprintf(os.Stderr, "[app] socket=%s db=%s jsonl=%s\n", config.Socket, config.DB, config.JSONL)
+		fmt.Fprintf(os.Stderr, "[app] proxy listen=%s:%s queue_size=%d\n", config.ListenHost, config.ListenPort, config.QueueSize)
+	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -63,6 +71,7 @@ func Run(ctx context.Context, config RunConfig) error {
 		SocketPath:    config.Socket,
 		BatchSize:     100,
 		FlushInterval: 500 * time.Millisecond,
+		Verbose:       config.Verbose,
 	}, sink)
 	if err != nil {
 		return err
@@ -82,6 +91,8 @@ func Run(ctx context.Context, config RunConfig) error {
 		ListenHost:   config.ListenHost,
 		ListenPort:   config.ListenPort,
 		QueueSize:    config.QueueSize,
+		Quiet:        true,
+		Verbose:      config.Verbose,
 	})
 	if err != nil {
 		stop()
@@ -114,6 +125,7 @@ func parseRunConfig(args []string) (RunConfig, error) {
 	fs.StringVar(&config.ListenHost, "listen-host", "127.0.0.1", "mitmproxy listen host")
 	fs.StringVar(&config.ListenPort, "listen-port", "8080", "mitmproxy listen port")
 	fs.IntVar(&config.QueueSize, "queue-size", 10000, "addon queue size")
+	fs.BoolVar(&config.Verbose, "verbose", false, "print detailed sanitized debug logs")
 	if err := fs.Parse(args); err != nil {
 		return RunConfig{}, err
 	}

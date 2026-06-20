@@ -19,6 +19,8 @@ type Config struct {
 	SocketPath    string
 	BatchSize     int
 	FlushInterval time.Duration
+	Verbose       bool
+	Logf          func(string, ...any)
 }
 
 type Counters struct {
@@ -54,6 +56,11 @@ func New(config Config, sink EventStore) (*Daemon, error) {
 	if sink == nil {
 		return nil, errors.New("store is required")
 	}
+	if config.Verbose && config.Logf == nil {
+		config.Logf = func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "[daemon] "+format+"\n", args...)
+		}
+	}
 	return &Daemon{config: config, store: sink}, nil
 }
 
@@ -66,9 +73,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen unixgram: %w", err)
 	}
+	d.logf("listening socket=%s batch_size=%d flush_interval=%s", d.config.SocketPath, d.config.BatchSize, d.config.FlushInterval)
 	defer func() {
 		conn.Close()
 		os.Remove(d.config.SocketPath)
+		d.logf("stopped socket=%s counters=%+v", d.config.SocketPath, d.Counters())
 	}()
 
 	events := make(chan event.Usage, d.config.BatchSize*2)
@@ -138,8 +147,21 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 		usage, err := event.Decode(buffer[:n])
 		if err != nil {
 			d.add(func(c *Counters) { c.Invalid++ })
+			d.logf("invalid datagram bytes=%d error=%v", n, err)
 			continue
 		}
+		d.logf("received response_id=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
+			usage.ResponseID,
+			usage.Transport,
+			usage.Host,
+			usage.Path,
+			usage.Model,
+			usage.InputTokens,
+			usage.OutputTokens,
+			usage.TotalTokens,
+			usage.CachedTokens,
+			usage.ReasoningTokens,
+		)
 		select {
 		case events <- usage:
 		case <-ctx.Done():
@@ -152,16 +174,24 @@ func (d *Daemon) write(ctx context.Context, batch []event.Usage) {
 	result, err := d.store.WriteBatch(ctx, batch)
 	if err != nil {
 		d.add(func(c *Counters) { c.WriteError++ })
+		d.logf("write failed batch=%d error=%v", len(batch), err)
 		return
 	}
 	d.add(func(c *Counters) {
 		c.Written += uint64(result.Inserted)
 		c.Duplicates += uint64(result.Duplicates)
 	})
+	d.logf("write batch=%d inserted=%d duplicates=%d", len(batch), result.Inserted, result.Duplicates)
 }
 
 func (d *Daemon) add(update func(*Counters)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	update(&d.counters)
+}
+
+func (d *Daemon) logf(format string, args ...any) {
+	if d.config.Verbose && d.config.Logf != nil {
+		d.config.Logf(format, args...)
+	}
 }

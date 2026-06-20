@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ type Config struct {
 	ListenHost   string
 	ListenPort   string
 	QueueSize    int
+	Quiet        bool
+	Verbose      bool
 }
 
 func DefaultMitmdumpPath(root string) string {
@@ -57,18 +60,26 @@ func Command(ctx context.Context, config Config) (*exec.Cmd, error) {
 		config.QueueSize = 10000
 	}
 
-	cmd := exec.CommandContext(ctx,
-		config.MitmdumpPath,
+	args := []string{
 		"-s", config.AddonPath,
 		"--listen-host", config.ListenHost,
 		"--listen-port", config.ListenPort,
-	)
+	}
+	if config.Quiet {
+		args = append(args, "--quiet")
+	}
+	cmd := exec.CommandContext(ctx, config.MitmdumpPath, args...)
 	cmd.Env = append(os.Environ(),
 		"OAI_METER_SOCKET="+config.SocketPath,
 		fmt.Sprintf("OAI_METER_QUEUE_SIZE=%d", config.QueueSize),
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if config.Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+	}
 	cmd.Stdin = os.Stdin
 	return cmd, nil
 }
