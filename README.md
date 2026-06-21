@@ -1,11 +1,21 @@
 # OAI Response Meter
 
-Local usage metering for OpenAI Responses API traffic observed through
-`mitmdump`.
+OAI Response Meter is a local usage observer for OpenAI Responses API traffic.
+It is built for cases where you want token and cost visibility without changing
+the client, SDK, endpoint, request body, or application code.
 
-This project keeps mitmproxy as the MITM engine and uses a thin Python addon to
-extract usage metadata. The addon sends best-effort Unix datagram events to a Go
-daemon, which writes SQLite and JSONL records.
+Unlike tools that act as an OpenAI-compatible endpoint, this project sits beside
+normal traffic as an explicit HTTPS proxy powered by `mitmdump`. The client still
+believes it is talking to the original service, and the upstream service still
+sees the usual client request shape. There is no extra "third-party client"
+request pattern introduced by a relay endpoint, and no need to teach every
+caller about a new base URL.
+
+The proxy behaves as a faithful local listener: it watches completed Responses
+API messages, extracts only usage metadata, and lets the original request flow
+continue normally. A thin Python addon handles the mitmproxy integration and
+sends best-effort Unix datagram events to a Go daemon, which writes SQLite and
+JSONL records and serves the embedded dashboard.
 
 ## Current Shape
 
@@ -161,6 +171,53 @@ Estimated cost uses `configs/prices.json` by default and can be overridden with
 `--prices`. Missing price files disable cost estimates, and missing model rates
 mark only those tokens as unpriced. Prices are stored as USD per 1M tokens and
 are meant to be edited by the user when OpenAI pricing changes.
+
+## Proxy Overhead Check
+
+To estimate the overhead added to ordinary non-target HTTPS traffic, compare a
+direct baseline with the same request through the local mitmproxy listener. The
+examples below use `hey` and public test endpoints; results depend on your
+network and on the public endpoint's own tail latency.
+
+Small requests:
+
+```bash
+hey -z 30s -c 50 https://httpbingo.org/get
+
+hey -z 30s -c 50 \
+  -x http://127.0.0.1:8080 \
+  https://httpbingo.org/get
+```
+
+Large responses:
+
+```bash
+hey -z 30s -c 10 https://httpbingo.org/bytes/262144
+
+hey -z 30s -c 10 \
+  -x http://127.0.0.1:8080 \
+  https://httpbingo.org/bytes/262144
+```
+
+Dense small-request load:
+
+```bash
+hey -z 60s -c 200 \
+  -x http://127.0.0.1:8080 \
+  https://httpbingo.org/get
+```
+
+Compare these fields between direct and proxied runs:
+
+- `Requests/sec`
+- `Average`
+- p95 and p99 in `Latency distribution`
+- non-2xx/3xx status codes
+
+These checks intentionally exercise non-target traffic. For such requests the
+addon should miss its scope quickly, so the measured overhead is mostly
+mitmproxy, TLS interception, and connection handling rather than usage
+extraction.
 
 ## Frontend Development
 
