@@ -9,7 +9,8 @@ daemon, which writes SQLite and JSONL records.
 
 ## Current Shape
 
-- `mitm/addon.py` observes HTTPS JSON, SSE, and WebSocket completed responses.
+- `mitm/addon.py` observes HTTPS JSON, SSE, and WebSocket completed Responses
+  API responses.
 - `oai-meter run` starts the Go daemon and wraps `mitmdump`.
 - Usage records are written to `data/usage.db` and `data/usage.jsonl` by default.
 - The project assumes a compatible `mitmdump` binary already exists at
@@ -116,6 +117,11 @@ The meter records only usage metadata:
 - response id
 - model
 - input, output, total, cached, and reasoning token counts
+
+The scope is intentionally narrow:
+
+- `api.openai.com/v1/responses`
+- `chatgpt.com/backend-api/codex`
 
 It does not persist Authorization headers, cookies, prompts, request bodies,
 response bodies, generated content, or full WebSocket messages.

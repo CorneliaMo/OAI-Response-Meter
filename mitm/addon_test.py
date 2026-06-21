@@ -90,6 +90,17 @@ class AddonTest(unittest.TestCase):
 
         self.assertIsNone(extract_http_usage(flow))
 
+    def test_ignores_other_api_openai_paths(self):
+        flow = Obj(
+            request=Obj(host="api.openai.com", path="/v1/models"),
+            response=Obj(
+                headers={"content-type": "application/json"},
+                text='{"id":"resp_1","usage":{"total_tokens":1}}',
+            ),
+        )
+
+        self.assertIsNone(extract_http_usage(flow))
+
     def test_queue_full_drops_current_event(self):
         async def run():
             addon = UsageMeterAddon()

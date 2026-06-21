@@ -206,7 +206,7 @@ def _flow_host_path(flow: Any) -> tuple[str, str]:
 
 def _in_scope(host: str, path: str) -> bool:
     if host == "api.openai.com":
-        return True
+        return path == "/v1/responses"
     return host == "chatgpt.com" and path.startswith("/backend-api/codex")
 
 
