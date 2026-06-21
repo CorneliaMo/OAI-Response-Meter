@@ -252,7 +252,10 @@ export function App() {
               subtitle={`${data.timeseries.bucket} buckets over the selected ${range}`}
               option={{
                 animation: false,
-                tooltip: { trigger: "axis" },
+                tooltip: {
+                  trigger: "axis",
+                  formatter: (params: unknown) => formatChartTooltip(params, displayMode, data.summary.cost.currency),
+                },
                 legend: { textStyle: { color: "#52616f" } },
                 grid: { top: 34, right: 18, bottom: 28, left: 42 },
                 xAxis: {
@@ -316,7 +319,11 @@ export function App() {
               subtitle={displayMode === "cost" ? "Top models by estimated cost" : "Top models by total tokens"}
               option={{
                 animation: false,
-                tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+                tooltip: {
+                  trigger: "axis",
+                  axisPointer: { type: "shadow" },
+                  formatter: (params: unknown) => formatChartTooltip(params, displayMode, data.summary.cost.currency),
+                },
                 grid: { top: 16, right: 16, bottom: 24, left: 112 },
                 xAxis: {
                   type: "value",
@@ -556,6 +563,44 @@ function formatCompactCost(value: number, currency: string) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatChartTooltip(params: unknown, displayMode: DisplayMode, currency: string) {
+  const items = Array.isArray(params) ? params : [params];
+  const rows = items
+    .map((item) => {
+      if (!isTooltipParam(item)) {
+        return "";
+      }
+      const value = Array.isArray(item.value) ? Number(item.value[item.value.length - 1]) : Number(item.value);
+      const formattedValue =
+        displayMode === "cost" ? formatMoneyValue(value, currency) : formatInt(Number.isFinite(value) ? value : 0);
+      return `${item.marker ?? ""}${item.seriesName || item.name}: ${formattedValue}`;
+    })
+    .filter(Boolean);
+  const first = items.find(isTooltipParam);
+  const title = first?.axisValueLabel || first?.axisValue || first?.name || "";
+  return [title, ...rows].filter(Boolean).join("<br/>");
+}
+
+function isTooltipParam(value: unknown): value is {
+  axisValue?: string | number;
+  axisValueLabel?: string;
+  marker?: string;
+  name?: string;
+  seriesName?: string;
+  value?: number | string | Array<number | string>;
+} {
+  return typeof value === "object" && value !== null;
+}
+
+function formatMoneyValue(value: number, currency: string) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: currency || "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number.isFinite(value) ? value : 0);
 }
 
 function describeCost(cost: Cost) {
