@@ -543,8 +543,8 @@ function formatCost(cost: Cost) {
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: cost.currency || "USD",
-    minimumFractionDigits: cost.estimated_cost > 0 && cost.estimated_cost < 0.01 ? 4 : 2,
-    maximumFractionDigits: cost.estimated_cost > 0 && cost.estimated_cost < 0.01 ? 6 : 2,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(cost.estimated_cost);
 }
 
@@ -553,7 +553,8 @@ function formatCompactCost(value: number, currency: string) {
     style: "currency",
     currency: currency || "USD",
     notation: "compact",
-    maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 
