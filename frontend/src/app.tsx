@@ -210,6 +210,7 @@ export function App() {
               title="Token Trend"
               subtitle={`${data.timeseries.bucket} buckets over the selected ${range}`}
               option={{
+                animation: false,
                 tooltip: { trigger: "axis" },
                 legend: { textStyle: { color: "#52616f" } },
                 grid: { top: 34, right: 18, bottom: 28, left: 42 },
@@ -256,6 +257,7 @@ export function App() {
               title="Model Breakdown"
               subtitle="Top models by total tokens"
               option={{
+                animation: false,
                 tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
                 grid: { top: 16, right: 16, bottom: 24, left: 112 },
                 xAxis: {
@@ -388,19 +390,28 @@ export function App() {
 
 function ChartPanel(props: { title: string; subtitle: string; option: echarts.EChartsCoreOption }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<echarts.ECharts | null>(null);
 
   useEffect(() => {
     if (!ref.current) {
       return;
     }
     const chart = echarts.init(ref.current, undefined, { renderer: "canvas" });
-    chart.setOption(props.option);
+    chartRef.current = chart;
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
     return () => {
       window.removeEventListener("resize", resize);
       chart.dispose();
+      chartRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    chartRef.current?.setOption(props.option, {
+      notMerge: true,
+      lazyUpdate: true,
+    });
   }, [props.option]);
 
   return (
