@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cornelia/oai-response-meter/internal/pricing"
 	_ "modernc.org/sqlite"
 )
 
@@ -23,8 +24,9 @@ import (
 var embeddedStatic embed.FS
 
 type Config struct {
-	Addr   string
-	DBPath string
+	Addr    string
+	DBPath  string
+	Pricing *pricing.Catalog
 }
 
 type Server struct {
@@ -35,16 +37,17 @@ type Server struct {
 }
 
 type SummaryResponse struct {
-	Range           string  `json:"range"`
-	Requests        int64   `json:"requests"`
-	TotalTokens     int64   `json:"total_tokens"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CachedTokens    int64   `json:"cached_tokens"`
-	ReasoningTokens int64   `json:"reasoning_tokens"`
-	CacheRatio      float64 `json:"cache_ratio"`
-	ReasoningRatio  float64 `json:"reasoning_ratio"`
-	LatestEventTime string  `json:"latest_event_time"`
+	Range           string       `json:"range"`
+	Requests        int64        `json:"requests"`
+	TotalTokens     int64        `json:"total_tokens"`
+	InputTokens     int64        `json:"input_tokens"`
+	OutputTokens    int64        `json:"output_tokens"`
+	CachedTokens    int64        `json:"cached_tokens"`
+	ReasoningTokens int64        `json:"reasoning_tokens"`
+	CacheRatio      float64      `json:"cache_ratio"`
+	ReasoningRatio  float64      `json:"reasoning_ratio"`
+	LatestEventTime string       `json:"latest_event_time"`
+	Cost            pricing.Cost `json:"cost"`
 }
 
 type TimeseriesResponse struct {
@@ -54,13 +57,14 @@ type TimeseriesResponse struct {
 }
 
 type TimeseriesPoint struct {
-	Time            string `json:"time"`
-	Requests        int64  `json:"requests"`
-	TotalTokens     int64  `json:"total_tokens"`
-	InputTokens     int64  `json:"input_tokens"`
-	OutputTokens    int64  `json:"output_tokens"`
-	CachedTokens    int64  `json:"cached_tokens"`
-	ReasoningTokens int64  `json:"reasoning_tokens"`
+	Time            string       `json:"time"`
+	Requests        int64        `json:"requests"`
+	TotalTokens     int64        `json:"total_tokens"`
+	InputTokens     int64        `json:"input_tokens"`
+	OutputTokens    int64        `json:"output_tokens"`
+	CachedTokens    int64        `json:"cached_tokens"`
+	ReasoningTokens int64        `json:"reasoning_tokens"`
+	Cost            pricing.Cost `json:"cost"`
 }
 
 type ModelsResponse struct {
@@ -68,13 +72,14 @@ type ModelsResponse struct {
 }
 
 type ModelItem struct {
-	Model           string `json:"model"`
-	Requests        int64  `json:"requests"`
-	TotalTokens     int64  `json:"total_tokens"`
-	InputTokens     int64  `json:"input_tokens"`
-	OutputTokens    int64  `json:"output_tokens"`
-	CachedTokens    int64  `json:"cached_tokens"`
-	ReasoningTokens int64  `json:"reasoning_tokens"`
+	Model           string       `json:"model"`
+	Requests        int64        `json:"requests"`
+	TotalTokens     int64        `json:"total_tokens"`
+	InputTokens     int64        `json:"input_tokens"`
+	OutputTokens    int64        `json:"output_tokens"`
+	CachedTokens    int64        `json:"cached_tokens"`
+	ReasoningTokens int64        `json:"reasoning_tokens"`
+	Cost            pricing.Cost `json:"cost"`
 }
 
 type ChainsResponse struct {
@@ -82,17 +87,18 @@ type ChainsResponse struct {
 }
 
 type ChainItem struct {
-	ChainRootResponseID string   `json:"chain_root_response_id"`
-	ResponseCount       int64    `json:"response_count"`
-	StartedAt           string   `json:"started_at"`
-	EndedAt             string   `json:"ended_at"`
-	Models              []string `json:"models"`
-	Transports          []string `json:"transports"`
-	TotalTokens         int64    `json:"total_tokens"`
-	InputTokens         int64    `json:"input_tokens"`
-	OutputTokens        int64    `json:"output_tokens"`
-	CachedTokens        int64    `json:"cached_tokens"`
-	ReasoningTokens     int64    `json:"reasoning_tokens"`
+	ChainRootResponseID string       `json:"chain_root_response_id"`
+	ResponseCount       int64        `json:"response_count"`
+	StartedAt           string       `json:"started_at"`
+	EndedAt             string       `json:"ended_at"`
+	Models              []string     `json:"models"`
+	Transports          []string     `json:"transports"`
+	TotalTokens         int64        `json:"total_tokens"`
+	InputTokens         int64        `json:"input_tokens"`
+	OutputTokens        int64        `json:"output_tokens"`
+	CachedTokens        int64        `json:"cached_tokens"`
+	ReasoningTokens     int64        `json:"reasoning_tokens"`
+	Cost                pricing.Cost `json:"cost"`
 }
 
 type EventsResponse struct {
@@ -102,19 +108,20 @@ type EventsResponse struct {
 }
 
 type EventItem struct {
-	Timestamp           string `json:"ts"`
-	Transport           string `json:"transport"`
-	Host                string `json:"host"`
-	Path                string `json:"path"`
-	ResponseID          string `json:"response_id"`
-	PreviousResponseID  string `json:"previous_response_id"`
-	ChainRootResponseID string `json:"chain_root_response_id"`
-	Model               string `json:"model"`
-	InputTokens         int64  `json:"input_tokens"`
-	OutputTokens        int64  `json:"output_tokens"`
-	TotalTokens         int64  `json:"total_tokens"`
-	CachedTokens        int64  `json:"cached_tokens"`
-	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	Timestamp           string       `json:"ts"`
+	Transport           string       `json:"transport"`
+	Host                string       `json:"host"`
+	Path                string       `json:"path"`
+	ResponseID          string       `json:"response_id"`
+	PreviousResponseID  string       `json:"previous_response_id"`
+	ChainRootResponseID string       `json:"chain_root_response_id"`
+	Model               string       `json:"model"`
+	InputTokens         int64        `json:"input_tokens"`
+	OutputTokens        int64        `json:"output_tokens"`
+	TotalTokens         int64        `json:"total_tokens"`
+	CachedTokens        int64        `json:"cached_tokens"`
+	ReasoningTokens     int64        `json:"reasoning_tokens"`
+	Cost                pricing.Cost `json:"cost"`
 }
 
 type errorResponse struct {
@@ -203,6 +210,7 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 		db:       db,
 		now:      now,
 		staticFS: staticFS,
+		pricing:  config.Pricing,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", server.handleSummary)
@@ -219,6 +227,7 @@ type apiServer struct {
 	db       *sql.DB
 	now      func() time.Time
 	staticFS fs.FS
+	pricing  *pricing.Catalog
 }
 
 func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +236,7 @@ func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := querySummary(r.Context(), s.db, window)
+	resp, err := querySummary(r.Context(), s.db, window, s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -246,7 +255,7 @@ func (s apiServer) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryTimeseries(r.Context(), s.db, window, bucket)
+	resp, err := queryTimeseries(r.Context(), s.db, window, bucket, s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -260,7 +269,7 @@ func (s apiServer) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryModels(r.Context(), s.db, window)
+	resp, err := queryModels(r.Context(), s.db, window, s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -279,7 +288,7 @@ func (s apiServer) handleChains(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryChains(r.Context(), s.db, window, limit)
+	resp, err := queryChains(r.Context(), s.db, window, limit, s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -303,7 +312,7 @@ func (s apiServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryEvents(r.Context(), s.db, window, limit, offset, r.URL.Query().Get("chain_root_response_id"))
+	resp, err := queryEvents(r.Context(), s.db, window, limit, offset, r.URL.Query().Get("chain_root_response_id"), s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -399,10 +408,11 @@ func parseOffset(value string) (int, error) {
 	return offset, nil
 }
 
-func querySummary(ctx context.Context, db *sql.DB, window queryWindow) (SummaryResponse, error) {
+func querySummary(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (SummaryResponse, error) {
 	resp := SummaryResponse{Range: window.name}
-	err := db.QueryRowContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 select
+  coalesce(nullif(model, ''), '(unknown)'),
   count(*),
   coalesce(sum(total_tokens), 0),
   coalesce(sum(input_tokens), 0),
@@ -412,17 +422,33 @@ select
   coalesce(max(ts), '')
 from usage_events
 where ts >= ?
-`, window.cutoff.Format(time.RFC3339)).Scan(
-		&resp.Requests,
-		&resp.TotalTokens,
-		&resp.InputTokens,
-		&resp.OutputTokens,
-		&resp.CachedTokens,
-		&resp.ReasoningTokens,
-		&resp.LatestEventTime,
-	)
+group by coalesce(nullif(model, ''), '(unknown)')
+`, window.cutoff.Format(time.RFC3339))
 	if err != nil {
 		return SummaryResponse{}, fmt.Errorf("query summary: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var model string
+		var latest string
+		var requests, total, input, output, cached, reasoning int64
+		if err := rows.Scan(&model, &requests, &total, &input, &output, &cached, &reasoning, &latest); err != nil {
+			return SummaryResponse{}, fmt.Errorf("scan summary: %w", err)
+		}
+		resp.Requests += requests
+		resp.TotalTokens += total
+		resp.InputTokens += input
+		resp.OutputTokens += output
+		resp.CachedTokens += cached
+		resp.ReasoningTokens += reasoning
+		if latest > resp.LatestEventTime {
+			resp.LatestEventTime = latest
+		}
+		resp.Cost = pricing.Add(resp.Cost, estimateCost(catalog, model, input, output, cached, total))
+	}
+	if err := rows.Err(); err != nil {
+		return SummaryResponse{}, fmt.Errorf("iterate summary: %w", err)
 	}
 	if resp.InputTokens > 0 {
 		resp.CacheRatio = float64(resp.CachedTokens) / float64(resp.InputTokens)
@@ -433,7 +459,7 @@ where ts >= ?
 	return resp, nil
 }
 
-func queryTimeseries(ctx context.Context, db *sql.DB, window queryWindow, bucket string) (TimeseriesResponse, error) {
+func queryTimeseries(ctx context.Context, db *sql.DB, window queryWindow, bucket string, catalog *pricing.Catalog) (TimeseriesResponse, error) {
 	pattern := map[string]string{
 		"hour":  "%Y-%m-%dT%H:00:00Z",
 		"day":   "%Y-%m-%dT00:00:00Z",
@@ -442,6 +468,7 @@ func queryTimeseries(ctx context.Context, db *sql.DB, window queryWindow, bucket
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 select
   strftime('%s', ts) as bucket_time,
+  coalesce(nullif(model, ''), '(unknown)'),
   count(*),
   coalesce(sum(total_tokens), 0),
   coalesce(sum(input_tokens), 0),
@@ -450,7 +477,7 @@ select
   coalesce(sum(reasoning_tokens), 0)
 from usage_events
 where ts >= ?
-group by bucket_time
+group by bucket_time, coalesce(nullif(model, ''), '(unknown)')
 order by bucket_time asc
 `, pattern), window.cutoff.Format(time.RFC3339))
 	if err != nil {
@@ -459,28 +486,49 @@ order by bucket_time asc
 	defer rows.Close()
 
 	resp := TimeseriesResponse{Range: window.name, Bucket: bucket}
+	points := map[string]*TimeseriesPoint{}
 	for rows.Next() {
-		var item TimeseriesPoint
+		var bucketTime string
+		var model string
+		var requests, total, input, output, cached, reasoning int64
 		if err := rows.Scan(
-			&item.Time,
-			&item.Requests,
-			&item.TotalTokens,
-			&item.InputTokens,
-			&item.OutputTokens,
-			&item.CachedTokens,
-			&item.ReasoningTokens,
+			&bucketTime,
+			&model,
+			&requests,
+			&total,
+			&input,
+			&output,
+			&cached,
+			&reasoning,
 		); err != nil {
 			return TimeseriesResponse{}, fmt.Errorf("scan timeseries: %w", err)
 		}
-		resp.Points = append(resp.Points, item)
+		item := points[bucketTime]
+		if item == nil {
+			item = &TimeseriesPoint{Time: bucketTime}
+			points[bucketTime] = item
+		}
+		item.Requests += requests
+		item.TotalTokens += total
+		item.InputTokens += input
+		item.OutputTokens += output
+		item.CachedTokens += cached
+		item.ReasoningTokens += reasoning
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, model, input, output, cached, total))
 	}
 	if err := rows.Err(); err != nil {
 		return TimeseriesResponse{}, fmt.Errorf("iterate timeseries: %w", err)
 	}
+	for _, item := range points {
+		resp.Points = append(resp.Points, *item)
+	}
+	slices.SortFunc(resp.Points, func(a, b TimeseriesPoint) int {
+		return strings.Compare(a.Time, b.Time)
+	})
 	return resp, nil
 }
 
-func queryModels(ctx context.Context, db *sql.DB, window queryWindow) (ModelsResponse, error) {
+func queryModels(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (ModelsResponse, error) {
 	rows, err := db.QueryContext(ctx, `
 select
   coalesce(nullif(model, ''), '(unknown)'),
@@ -514,6 +562,7 @@ order by total_tokens desc, count(*) desc, 1 asc
 		); err != nil {
 			return ModelsResponse{}, fmt.Errorf("scan models: %w", err)
 		}
+		item.Cost = estimateCost(catalog, item.Model, item.InputTokens, item.OutputTokens, item.CachedTokens, item.TotalTokens)
 		resp.Items = append(resp.Items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -522,14 +571,14 @@ order by total_tokens desc, count(*) desc, 1 asc
 	return resp, nil
 }
 
-func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int) (ChainsResponse, error) {
+func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int, catalog *pricing.Catalog) (ChainsResponse, error) {
 	rows, err := db.QueryContext(ctx, `
 select
   chain_root_response_id,
+  coalesce(nullif(model, ''), '(unknown)'),
   count(*),
   min(ts),
   max(ts),
-  coalesce(group_concat(distinct nullif(model, '')), ''),
   coalesce(group_concat(distinct transport), ''),
   coalesce(sum(total_tokens), 0),
   coalesce(sum(input_tokens), 0),
@@ -538,46 +587,96 @@ select
   coalesce(sum(reasoning_tokens), 0)
 from usage_events
 where ts >= ?
-group by chain_root_response_id
+group by chain_root_response_id, coalesce(nullif(model, ''), '(unknown)')
 order by max(ts) desc
-limit ?
-`, window.cutoff.Format(time.RFC3339), limit)
+`, window.cutoff.Format(time.RFC3339))
 	if err != nil {
 		return ChainsResponse{}, fmt.Errorf("query chains: %w", err)
 	}
 	defer rows.Close()
 
-	resp := ChainsResponse{}
+	type chainAggregate struct {
+		item       *ChainItem
+		models     map[string]struct{}
+		transports map[string]struct{}
+	}
+	chains := map[string]*chainAggregate{}
 	for rows.Next() {
-		var item ChainItem
-		var models string
+		var chainID string
+		var model string
 		var transports string
+		var responseCount, total, input, output, cached, reasoning int64
+		var startedAt, endedAt string
 		if err := rows.Scan(
-			&item.ChainRootResponseID,
-			&item.ResponseCount,
-			&item.StartedAt,
-			&item.EndedAt,
-			&models,
+			&chainID,
+			&model,
+			&responseCount,
+			&startedAt,
+			&endedAt,
 			&transports,
-			&item.TotalTokens,
-			&item.InputTokens,
-			&item.OutputTokens,
-			&item.CachedTokens,
-			&item.ReasoningTokens,
+			&total,
+			&input,
+			&output,
+			&cached,
+			&reasoning,
 		); err != nil {
 			return ChainsResponse{}, fmt.Errorf("scan chains: %w", err)
 		}
-		item.Models = splitDistinctList(models)
-		item.Transports = splitDistinctList(transports)
-		resp.Items = append(resp.Items, item)
+		chain := chains[chainID]
+		if chain == nil {
+			chain = &chainAggregate{
+				item:       &ChainItem{ChainRootResponseID: chainID, StartedAt: startedAt, EndedAt: endedAt},
+				models:     map[string]struct{}{},
+				transports: map[string]struct{}{},
+			}
+			chains[chainID] = chain
+		}
+		item := chain.item
+		item.ResponseCount += responseCount
+		item.TotalTokens += total
+		item.InputTokens += input
+		item.OutputTokens += output
+		item.CachedTokens += cached
+		item.ReasoningTokens += reasoning
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, model, input, output, cached, total))
+		if startedAt < item.StartedAt {
+			item.StartedAt = startedAt
+		}
+		if endedAt > item.EndedAt {
+			item.EndedAt = endedAt
+		}
+		if model != "" && model != "(unknown)" {
+			chain.models[model] = struct{}{}
+		}
+		for _, transport := range splitDistinctList(transports) {
+			chain.transports[transport] = struct{}{}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return ChainsResponse{}, fmt.Errorf("iterate chains: %w", err)
 	}
+	resp := ChainsResponse{}
+	for _, chain := range chains {
+		for model := range chain.models {
+			chain.item.Models = append(chain.item.Models, model)
+		}
+		for transport := range chain.transports {
+			chain.item.Transports = append(chain.item.Transports, transport)
+		}
+		slices.Sort(chain.item.Models)
+		slices.Sort(chain.item.Transports)
+		resp.Items = append(resp.Items, *chain.item)
+	}
+	slices.SortFunc(resp.Items, func(a, b ChainItem) int {
+		return strings.Compare(b.EndedAt, a.EndedAt)
+	})
+	if len(resp.Items) > limit {
+		resp.Items = resp.Items[:limit]
+	}
 	return resp, nil
 }
 
-func queryEvents(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, chainRootResponseID string) (EventsResponse, error) {
+func queryEvents(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, chainRootResponseID string, catalog *pricing.Catalog) (EventsResponse, error) {
 	query := `
 select
   ts,
@@ -630,12 +729,23 @@ where ts >= ?
 		); err != nil {
 			return EventsResponse{}, fmt.Errorf("scan events: %w", err)
 		}
+		item.Cost = estimateCost(catalog, item.Model, item.InputTokens, item.OutputTokens, item.CachedTokens, item.TotalTokens)
 		resp.Items = append(resp.Items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return EventsResponse{}, fmt.Errorf("iterate events: %w", err)
 	}
 	return resp, nil
+}
+
+func estimateCost(catalog *pricing.Catalog, model string, input, output, cached, total int64) pricing.Cost {
+	return catalog.Estimate(pricing.Usage{
+		Model:        model,
+		InputTokens:  input,
+		OutputTokens: output,
+		CachedTokens: cached,
+		TotalTokens:  total,
+	})
 }
 
 func splitDistinctList(value string) []string {

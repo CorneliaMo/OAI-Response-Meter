@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cornelia/oai-response-meter/internal/event"
+	"github.com/cornelia/oai-response-meter/internal/pricing"
 	"github.com/cornelia/oai-response-meter/internal/store"
 )
 
@@ -148,6 +149,85 @@ func TestModelsEndpointAndValidation(t *testing.T) {
 	}
 }
 
+func TestPricingIsAggregatedPerModel(t *testing.T) {
+	handler := testHandlerWithPricing(t, &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-4.1": {Input: 1, CachedInput: 0.1, Output: 10},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summary?range=week", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var summary SummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if summary.Cost.Status != "partial" || summary.Cost.PricedTokens != 70 || summary.Cost.UnpricedTokens != 40 {
+		t.Fatalf("summary cost = %+v", summary.Cost)
+	}
+	if summary.Cost.EstimatedCost <= 0 {
+		t.Fatalf("estimated cost = %f", summary.Cost.EstimatedCost)
+	}
+
+	modelReq := httptest.NewRequest(http.MethodGet, "/api/models?range=week", nil)
+	modelRec := httptest.NewRecorder()
+	handler.ServeHTTP(modelRec, modelReq)
+	if modelRec.Code != http.StatusOK {
+		t.Fatalf("models status = %d body=%s", modelRec.Code, modelRec.Body.String())
+	}
+	var models ModelsResponse
+	if err := json.Unmarshal(modelRec.Body.Bytes(), &models); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if models.Items[0].Cost.Status != "priced" || models.Items[1].Cost.Status != "unpriced" {
+		t.Fatalf("model costs = %+v", models.Items)
+	}
+}
+
+func TestPricingAppearsOnEventsAndChains(t *testing.T) {
+	handler := testHandlerWithPricing(t, &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-4.1": {Input: 1, CachedInput: 0.1, Output: 10},
+		},
+	})
+
+	chainReq := httptest.NewRequest(http.MethodGet, "/api/chains?range=week&limit=10", nil)
+	chainRec := httptest.NewRecorder()
+	handler.ServeHTTP(chainRec, chainReq)
+	if chainRec.Code != http.StatusOK {
+		t.Fatalf("chains status = %d body=%s", chainRec.Code, chainRec.Body.String())
+	}
+	var chains ChainsResponse
+	if err := json.Unmarshal(chainRec.Body.Bytes(), &chains); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if chains.Items[0].ChainRootResponseID != "resp_root" || chains.Items[0].Cost.Status != "priced" {
+		t.Fatalf("first chain = %+v", chains.Items[0])
+	}
+
+	eventReq := httptest.NewRequest(http.MethodGet, "/api/events?range=week&limit=5", nil)
+	eventRec := httptest.NewRecorder()
+	handler.ServeHTTP(eventRec, eventReq)
+	if eventRec.Code != http.StatusOK {
+		t.Fatalf("events status = %d body=%s", eventRec.Code, eventRec.Body.String())
+	}
+	var events EventsResponse
+	if err := json.Unmarshal(eventRec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if events.Items[0].Cost.Status != "priced" || events.Items[1].Cost.Status != "unpriced" {
+		t.Fatalf("event costs = %+v", events.Items)
+	}
+}
+
 func TestUnknownAPIPathReturnsJSONNotFound(t *testing.T) {
 	handler := testHandler(t)
 
@@ -178,6 +258,10 @@ func TestStaticIndexServed(t *testing.T) {
 }
 
 func testHandler(t *testing.T) http.Handler {
+	return testHandlerWithPricing(t, nil)
+}
+
+func testHandlerWithPricing(t *testing.T, catalog *pricing.Catalog) http.Handler {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
@@ -197,7 +281,7 @@ func testHandler(t *testing.T) http.Handler {
 		t.Fatalf("WriteBatch() error = %v", err)
 	}
 
-	handler, db, err := newHandler(Config{DBPath: dbPath}, func() time.Time {
+	handler, db, err := newHandler(Config{DBPath: dbPath, Pricing: catalog}, func() time.Time {
 		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	})
 	if err != nil {

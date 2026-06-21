@@ -1,0 +1,48 @@
+{
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "last_checked": "2026-06-21",
+  "source": "https://developers.openai.com/api/docs/pricing",
+  "models": {
+    "gpt-5.5": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "output": 30.0
+    },
+    "gpt-5.5-pro": {
+      "input": 30.0,
+      "cached_input": 0.0,
+      "output": 180.0
+    },
+    "gpt-5.4": {
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15.0
+    },
+    "gpt-5.4-mini": {
+      "input": 0.75,
+      "cached_input": 0.075,
+      "output": 4.5
+    },
+    "gpt-5.4-nano": {
+      "input": 0.2,
+      "cached_input": 0.02,
+      "output": 1.25
+    },
+    "gpt-5.4-pro": {
+      "input": 30.0,
+      "cached_input": 0.0,
+      "output": 180.0
+    },
+    "chat-latest": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "output": 30.0
+    },
+    "gpt-5.3-codex": {
+      "input": 1.75,
+      "cached_input": 0.175,
+      "output": 14.0
+    }
+  }
+}

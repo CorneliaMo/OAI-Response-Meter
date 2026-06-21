@@ -18,6 +18,7 @@ import (
 	"github.com/cornelia/oai-response-meter/internal/daemon"
 	"github.com/cornelia/oai-response-meter/internal/dashboard"
 	"github.com/cornelia/oai-response-meter/internal/mitmwrap"
+	"github.com/cornelia/oai-response-meter/internal/pricing"
 	"github.com/cornelia/oai-response-meter/internal/store"
 )
 
@@ -32,6 +33,7 @@ type RunConfig struct {
 	NoDashboard   bool
 	DashboardHost string
 	DashboardPort string
+	Prices        string
 	QueueSize     int
 	Verbose       bool
 	ConfigPath    string
@@ -40,6 +42,7 @@ type RunConfig struct {
 
 type fileConfig struct {
 	UpstreamProxy string `json:"upstream_proxy"`
+	Prices        string `json:"prices"`
 }
 
 func RunCommand(args []string) error {
@@ -66,6 +69,11 @@ func Run(ctx context.Context, config RunConfig) error {
 	}
 	fillDefaults(&config)
 
+	priceCatalog, err := loadPrices(config.Prices)
+	if err != nil {
+		return err
+	}
+
 	mitmdumpPath, err := mitmwrap.ResolveMitmdump(config.Root, config.Mitmdump)
 	if err != nil {
 		return err
@@ -75,6 +83,11 @@ func Run(ctx context.Context, config RunConfig) error {
 		fmt.Fprintf(os.Stderr, "[app] mitmdump=%s\n", mitmdumpPath)
 		fmt.Fprintf(os.Stderr, "[app] addon=%s\n", filepath.Join(config.Root, "mitm", "addon.py"))
 		fmt.Fprintf(os.Stderr, "[app] socket=%s db=%s jsonl=%s\n", config.Socket, config.DB, config.JSONL)
+		if priceCatalog == nil {
+			fmt.Fprintf(os.Stderr, "[app] prices=%s loaded=false\n", config.Prices)
+		} else {
+			fmt.Fprintf(os.Stderr, "[app] prices=%s loaded=true models=%d currency=%s\n", config.Prices, len(priceCatalog.Models), priceCatalog.Currency)
+		}
 		fmt.Fprintf(os.Stderr, "[app] proxy listen=%s:%s queue_size=%d\n", config.ListenHost, config.ListenPort, config.QueueSize)
 		if config.UpstreamProxy == "" {
 			fmt.Fprintln(os.Stderr, "[app] upstream_proxy=<none>")
@@ -105,8 +118,9 @@ func Run(ctx context.Context, config RunConfig) error {
 	var dashboardServer *dashboard.Server
 	if !config.NoDashboard {
 		dashboardServer, err = dashboard.Start(ctx, dashboard.Config{
-			Addr:   net.JoinHostPort(config.DashboardHost, config.DashboardPort),
-			DBPath: config.DB,
+			Addr:    net.JoinHostPort(config.DashboardHost, config.DashboardPort),
+			DBPath:  config.DB,
+			Pricing: priceCatalog,
 		})
 		if err != nil {
 			return err
@@ -161,6 +175,7 @@ func parseRunConfig(args []string) (RunConfig, error) {
 	fs.StringVar(&config.DB, "db", "", "sqlite database path")
 	fs.StringVar(&config.JSONL, "jsonl", "", "jsonl audit log path")
 	fs.StringVar(&config.ConfigPath, "config", "", "json config file path")
+	fs.StringVar(&config.Prices, "prices", "", "json model price catalog path")
 	fs.StringVar(&config.UpstreamProxy, "upstream-proxy", "", "upstream explicit HTTP(S) proxy URL")
 	fs.StringVar(&config.ListenHost, "listen-host", "127.0.0.1", "mitmproxy listen host")
 	fs.StringVar(&config.ListenPort, "listen-port", "8080", "mitmproxy listen port")
@@ -189,6 +204,9 @@ func applyConfigFile(config *RunConfig) error {
 	}
 	if config.UpstreamProxy == "" && file.UpstreamProxy != "" {
 		config.UpstreamProxy = file.UpstreamProxy
+	}
+	if config.Prices == "" && file.Prices != "" {
+		config.Prices = file.Prices
 	}
 	return validateUpstreamProxy(config.UpstreamProxy)
 }
@@ -247,6 +265,9 @@ func fillDefaults(config *RunConfig) {
 	if config.JSONL == "" {
 		config.JSONL = filepath.Join(dataDir, "usage.jsonl")
 	}
+	if config.Prices == "" {
+		config.Prices = filepath.Join(config.Root, "configs", "prices.json")
+	}
 	if config.ListenHost == "" {
 		config.ListenHost = "127.0.0.1"
 	}
@@ -262,6 +283,20 @@ func fillDefaults(config *RunConfig) {
 	if config.QueueSize <= 0 {
 		config.QueueSize = 10000
 	}
+}
+
+func loadPrices(path string) (*pricing.Catalog, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	catalog, err := pricing.Load(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load prices: %w", err)
+	}
+	return catalog, nil
 }
 
 func waitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {

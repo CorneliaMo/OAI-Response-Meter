@@ -2,6 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 
 type RangeValue = "day" | "week" | "month" | "year";
+type DisplayMode = "tokens" | "cost";
+
+type Cost = {
+  pricing_enabled: boolean;
+  pricing_status: "disabled" | "priced" | "partial" | "unpriced";
+  currency: string;
+  estimated_cost: number;
+  priced_tokens: number;
+  unpriced_tokens: number;
+};
 
 type SummaryResponse = {
   range: RangeValue;
@@ -14,6 +24,7 @@ type SummaryResponse = {
   cache_ratio: number;
   reasoning_ratio: number;
   latest_event_time: string;
+  cost: Cost;
 };
 
 type TimeseriesPoint = {
@@ -24,6 +35,7 @@ type TimeseriesPoint = {
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost: Cost;
 };
 
 type TimeseriesResponse = {
@@ -40,6 +52,7 @@ type ModelItem = {
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost: Cost;
 };
 
 type ModelsResponse = {
@@ -58,6 +71,7 @@ type ChainItem = {
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost: Cost;
 };
 
 type ChainsResponse = {
@@ -78,6 +92,7 @@ type EventItem = {
   total_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost: Cost;
 };
 
 type EventsResponse = {
@@ -98,6 +113,7 @@ const ranges: RangeValue[] = ["day", "week", "month", "year"];
 
 export function App() {
   const [range, setRange] = useState<RangeValue>("week");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("tokens");
   const [selectedChain, setSelectedChain] = useState<string>("");
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -151,17 +167,29 @@ export function App() {
     if (!data) {
       return [];
     }
+    if (displayMode === "cost") {
+      return [
+        { label: "Estimated Cost", value: formatCost(data.summary.cost), detail: describeCost(data.summary.cost) },
+        { label: "Priced Tokens", value: formatInt(data.summary.cost.priced_tokens), detail: "covered by prices.json" },
+        { label: "Unpriced Tokens", value: formatInt(data.summary.cost.unpriced_tokens), detail: "missing model rates" },
+        { label: "Requests", value: formatInt(data.summary.requests), detail: "records in range" },
+        { label: "Input Tokens", value: formatInt(data.summary.input_tokens), detail: "cost basis" },
+        { label: "Output Tokens", value: formatInt(data.summary.output_tokens), detail: "cost basis" },
+        { label: "Cache Ratio", value: formatPercent(data.summary.cache_ratio), detail: "cached input share" },
+        { label: "Reasoning Ratio", value: formatPercent(data.summary.reasoning_ratio), detail: "reasoning token share" },
+      ];
+    }
     return [
-      { label: "Requests", value: formatInt(data.summary.requests) },
-      { label: "Total Tokens", value: formatInt(data.summary.total_tokens) },
-      { label: "Input", value: formatInt(data.summary.input_tokens) },
-      { label: "Output", value: formatInt(data.summary.output_tokens) },
-      { label: "Reasoning", value: formatInt(data.summary.reasoning_tokens) },
-      { label: "Cached", value: formatInt(data.summary.cached_tokens) },
-      { label: "Cache Ratio", value: formatPercent(data.summary.cache_ratio) },
-      { label: "Reasoning Ratio", value: formatPercent(data.summary.reasoning_ratio) },
+      { label: "Requests", value: formatInt(data.summary.requests), detail: "records in range" },
+      { label: "Total Tokens", value: formatInt(data.summary.total_tokens), detail: describeCost(data.summary.cost) },
+      { label: "Input", value: formatInt(data.summary.input_tokens), detail: "prompt-side usage" },
+      { label: "Output", value: formatInt(data.summary.output_tokens), detail: "completion-side usage" },
+      { label: "Reasoning", value: formatInt(data.summary.reasoning_tokens), detail: "reported reasoning" },
+      { label: "Cached", value: formatInt(data.summary.cached_tokens), detail: "cached input" },
+      { label: "Cache Ratio", value: formatPercent(data.summary.cache_ratio), detail: "cached / input" },
+      { label: "Reasoning Ratio", value: formatPercent(data.summary.reasoning_ratio), detail: "reasoning / total" },
     ];
-  }, [data]);
+  }, [data, displayMode]);
 
   return (
     <main className="page">
@@ -188,6 +216,18 @@ export function App() {
               </button>
             ))}
           </div>
+          <div className="segmented compact">
+            {(["tokens", "cost"] as DisplayMode[]).map((value) => (
+              <button
+                key={value}
+                className={value === displayMode ? "active" : ""}
+                onClick={() => setDisplayMode(value)}
+                type="button"
+              >
+                {value}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -201,13 +241,14 @@ export function App() {
               <article className="kpiCard" key={item.label}>
                 <p>{item.label}</p>
                 <strong>{item.value}</strong>
+                <span>{item.detail}</span>
               </article>
             ))}
           </section>
 
           <section className="chartGrid">
             <ChartPanel
-              title="Token Trend"
+              title={displayMode === "cost" ? "Cost Trend" : "Token Trend"}
               subtitle={`${data.timeseries.bucket} buckets over the selected ${range}`}
               option={{
                 animation: false,
@@ -221,48 +262,69 @@ export function App() {
                 },
                 yAxis: {
                   type: "value",
-                  axisLabel: { color: "#6a7885" },
+                  axisLabel: {
+                    color: "#6a7885",
+                    formatter: (value: number) =>
+                      displayMode === "cost" ? formatCompactCost(value, data.summary.cost.currency) : formatCompactNumber(value),
+                  },
                   splitLine: { lineStyle: { color: "rgba(102, 115, 128, 0.15)" } },
                 },
-                series: [
-                  {
-                    name: "Total",
-                    type: "line",
-                    smooth: true,
-                    areaStyle: { color: "rgba(30, 77, 118, 0.18)" },
-                    lineStyle: { color: "#1e4d76", width: 3 },
-                    itemStyle: { color: "#1e4d76" },
-                    data: data.timeseries.points.map((point) => point.total_tokens),
-                  },
-                  {
-                    name: "Input",
-                    type: "line",
-                    smooth: true,
-                    lineStyle: { color: "#8b3151", width: 2 },
-                    itemStyle: { color: "#8b3151" },
-                    data: data.timeseries.points.map((point) => point.input_tokens),
-                  },
-                  {
-                    name: "Output",
-                    type: "line",
-                    smooth: true,
-                    lineStyle: { color: "#2d6a57", width: 2 },
-                    itemStyle: { color: "#2d6a57" },
-                    data: data.timeseries.points.map((point) => point.output_tokens),
-                  },
-                ],
+                series:
+                  displayMode === "cost"
+                    ? [
+                        {
+                          name: "Estimated Cost",
+                          type: "line",
+                          smooth: true,
+                          areaStyle: { color: "rgba(30, 77, 118, 0.18)" },
+                          lineStyle: { color: "#1e4d76", width: 3 },
+                          itemStyle: { color: "#1e4d76" },
+                          data: data.timeseries.points.map((point) => point.cost.estimated_cost),
+                        },
+                      ]
+                    : [
+                        {
+                          name: "Total",
+                          type: "line",
+                          smooth: true,
+                          areaStyle: { color: "rgba(30, 77, 118, 0.18)" },
+                          lineStyle: { color: "#1e4d76", width: 3 },
+                          itemStyle: { color: "#1e4d76" },
+                          data: data.timeseries.points.map((point) => point.total_tokens),
+                        },
+                        {
+                          name: "Input",
+                          type: "line",
+                          smooth: true,
+                          lineStyle: { color: "#8b3151", width: 2 },
+                          itemStyle: { color: "#8b3151" },
+                          data: data.timeseries.points.map((point) => point.input_tokens),
+                        },
+                        {
+                          name: "Output",
+                          type: "line",
+                          smooth: true,
+                          lineStyle: { color: "#2d6a57", width: 2 },
+                          itemStyle: { color: "#2d6a57" },
+                          data: data.timeseries.points.map((point) => point.output_tokens),
+                        },
+                      ],
               }}
             />
             <ChartPanel
               title="Model Breakdown"
-              subtitle="Top models by total tokens"
+              subtitle={displayMode === "cost" ? "Top models by estimated cost" : "Top models by total tokens"}
               option={{
                 animation: false,
                 tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
                 grid: { top: 16, right: 16, bottom: 24, left: 112 },
                 xAxis: {
                   type: "value",
-                  axisLabel: { color: "#6a7885" },
+                  axisLabel: {
+                    color: "#6a7885",
+                    formatter: (value: number) =>
+                      displayMode === "cost" ? formatCompactCost(value, data.summary.cost.currency) : formatCompactNumber(value),
+                  },
                   splitLine: { lineStyle: { color: "rgba(102, 115, 128, 0.15)" } },
                 },
                 yAxis: {
@@ -274,7 +336,9 @@ export function App() {
                 series: [
                   {
                     type: "bar",
-                    data: data.models.items.slice(0, 8).map((item) => item.total_tokens),
+                    data: data.models.items
+                      .slice(0, 8)
+                      .map((item) => (displayMode === "cost" ? item.cost.estimated_cost : item.total_tokens)),
                     itemStyle: {
                       color: "#34495e",
                       borderRadius: [0, 6, 6, 0],
@@ -318,7 +382,7 @@ export function App() {
                       <th>Chain</th>
                       <th>Responses</th>
                       <th>Models</th>
-                      <th>Tokens</th>
+                      <th>{displayMode === "cost" ? "Cost" : "Tokens"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -334,7 +398,10 @@ export function App() {
                         </td>
                         <td>{formatInt(item.response_count)}</td>
                         <td>{item.models.join(", ") || "Unknown"}</td>
-                        <td>{formatInt(item.total_tokens)}</td>
+                        <td>
+                          <strong>{displayMode === "cost" ? formatCost(item.cost) : formatInt(item.total_tokens)}</strong>
+                          <span>{displayMode === "cost" ? describeCost(item.cost) : `${formatInt(item.input_tokens)} in / ${formatInt(item.output_tokens)} out`}</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -358,7 +425,7 @@ export function App() {
                       <th>Time</th>
                       <th>Model</th>
                       <th>Route</th>
-                      <th>Total</th>
+                      <th>{displayMode === "cost" ? "Cost" : "Total"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -373,7 +440,10 @@ export function App() {
                           <strong>{item.host}</strong>
                           <span>{item.path}</span>
                         </td>
-                        <td>{formatInt(item.total_tokens)}</td>
+                        <td>
+                          <strong>{displayMode === "cost" ? formatCost(item.cost) : formatInt(item.total_tokens)}</strong>
+                          <span>{displayMode === "cost" ? describeCost(item.cost) : `${formatInt(item.input_tokens)} in / ${formatInt(item.output_tokens)} out`}</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -454,6 +524,50 @@ async function requestJSON<T>(url: string): Promise<T> {
 
 function formatInt(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatCost(cost: Cost) {
+  if (!cost.pricing_enabled) {
+    return "pricing off";
+  }
+  if (cost.pricing_status === "unpriced") {
+    return "unpriced";
+  }
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: cost.currency || "USD",
+    minimumFractionDigits: cost.estimated_cost > 0 && cost.estimated_cost < 0.01 ? 4 : 2,
+    maximumFractionDigits: cost.estimated_cost > 0 && cost.estimated_cost < 0.01 ? 6 : 2,
+  }).format(cost.estimated_cost);
+}
+
+function formatCompactCost(value: number, currency: string) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: currency || "USD",
+    notation: "compact",
+    maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
+  }).format(value);
+}
+
+function describeCost(cost: Cost) {
+  if (!cost.pricing_enabled) {
+    return "prices.json not loaded";
+  }
+  if (cost.pricing_status === "partial") {
+    return `${formatInt(cost.unpriced_tokens)} unpriced tokens`;
+  }
+  if (cost.pricing_status === "unpriced") {
+    return "model price missing";
+  }
+  return `${formatInt(cost.priced_tokens)} priced tokens`;
 }
 
 function formatPercent(value: number) {

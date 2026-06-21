@@ -96,6 +96,14 @@ td span {
   color: #667581;
 }
 
+.kpiCard span {
+  display: block;
+  margin-top: 8px;
+  color: #667581;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: 0.82rem;
+}
+
 .heroMeta strong,
 .kpiCard strong {
   display: block;
@@ -112,6 +120,11 @@ td span {
   padding: 6px;
   background: rgba(41, 70, 92, 0.08);
   border-radius: 999px;
+}
+
+.segmented.compact {
+  grid-template-columns: repeat(2, 1fr);
+  margin-top: 10px;
 }
 
 .segmented button,

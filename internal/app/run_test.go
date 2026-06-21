@@ -15,6 +15,7 @@ func TestParseRunConfig(t *testing.T) {
 		"--socket", "/tmp/socket",
 		"--db", "/tmp/usage.db",
 		"--jsonl", "/tmp/usage.jsonl",
+		"--prices", "/tmp/prices.json",
 		"--listen-host", "localhost",
 		"--listen-port", "18080",
 		"--dashboard-host", "0.0.0.0",
@@ -35,6 +36,9 @@ func TestParseRunConfig(t *testing.T) {
 	if config.ConfigPath != "/tmp/config.json" || config.UpstreamProxy != "http://127.0.0.1:7890" {
 		t.Fatalf("proxy config = %+v", config)
 	}
+	if config.Prices != "/tmp/prices.json" {
+		t.Fatalf("Prices = %q", config.Prices)
+	}
 	if !config.Verbose {
 		t.Fatal("Verbose = false, want true")
 	}
@@ -42,7 +46,7 @@ func TestParseRunConfig(t *testing.T) {
 
 func TestApplyConfigFileSetsUpstreamProxy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"upstream_proxy":"http://127.0.0.1:7890"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"upstream_proxy":"http://127.0.0.1:7890","prices":"/tmp/from-config-prices.json"}`), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	config := RunConfig{ConfigPath: path}
@@ -53,20 +57,26 @@ func TestApplyConfigFileSetsUpstreamProxy(t *testing.T) {
 	if config.UpstreamProxy != "http://127.0.0.1:7890" {
 		t.Fatalf("UpstreamProxy = %q", config.UpstreamProxy)
 	}
+	if config.Prices != "/tmp/from-config-prices.json" {
+		t.Fatalf("Prices = %q", config.Prices)
+	}
 }
 
 func TestExplicitUpstreamProxyOverridesConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"upstream_proxy":"http://from-config:7890"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"upstream_proxy":"http://from-config:7890","prices":"/tmp/from-config-prices.json"}`), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	config := RunConfig{ConfigPath: path, UpstreamProxy: "https://from-cli:7890"}
+	config := RunConfig{ConfigPath: path, UpstreamProxy: "https://from-cli:7890", Prices: "/tmp/from-cli-prices.json"}
 
 	if err := applyConfigFile(&config); err != nil {
 		t.Fatalf("applyConfigFile() error = %v", err)
 	}
 	if config.UpstreamProxy != "https://from-cli:7890" {
 		t.Fatalf("UpstreamProxy = %q", config.UpstreamProxy)
+	}
+	if config.Prices != "/tmp/from-cli-prices.json" {
+		t.Fatalf("Prices = %q", config.Prices)
 	}
 }
 
@@ -117,10 +127,23 @@ func TestFillDefaults(t *testing.T) {
 	if config.JSONL != filepath.Join("/tmp/project", "data", "usage.jsonl") {
 		t.Fatalf("JSONL = %q", config.JSONL)
 	}
+	if config.Prices != filepath.Join("/tmp/project", "configs", "prices.json") {
+		t.Fatalf("Prices = %q", config.Prices)
+	}
 	if config.ListenHost != "127.0.0.1" || config.ListenPort != "8080" || config.QueueSize != 10000 {
 		t.Fatalf("defaults = %+v", config)
 	}
 	if config.DashboardHost != "127.0.0.1" || config.DashboardPort != "8081" {
 		t.Fatalf("defaults = %+v", config)
+	}
+}
+
+func TestLoadPricesMissingFileDisablesPricing(t *testing.T) {
+	catalog, err := loadPrices(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("loadPrices() error = %v", err)
+	}
+	if catalog != nil {
+		t.Fatalf("catalog = %+v, want nil", catalog)
 	}
 }

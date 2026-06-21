@@ -63,6 +63,7 @@ Useful flags:
 --db            SQLite path, default data/usage.db
 --jsonl         JSONL audit path, default data/usage.jsonl
 --config        JSON config file path
+--prices        JSON price catalog path, default configs/prices.json
 --upstream-proxy upstream explicit HTTP(S) proxy URL
 --listen-host   mitmdump listen host, default 127.0.0.1
 --listen-port   mitmdump listen port, default 8080
@@ -111,7 +112,8 @@ Config file example:
 
 ```json
 {
-  "upstream_proxy": "http://127.0.0.1:7890"
+  "upstream_proxy": "http://127.0.0.1:7890",
+  "prices": "configs/prices.json"
 }
 ```
 
@@ -146,13 +148,19 @@ timestamps, transport, host, path, response IDs, model, and token counts.
 The embedded dashboard polls every 5 seconds and includes:
 
 - overview KPI cards
-- token trend chart
+- token or estimated cost KPI cards
+- token or estimated cost trend chart
 - model breakdown chart
 - conversation chain rollups
 - raw usage event table
 
 No prompt, request body, response body, generated content, or message text is
 rendered by the dashboard.
+
+Estimated cost uses `configs/prices.json` by default and can be overridden with
+`--prices`. Missing price files disable cost estimates, and missing model rates
+mark only those tokens as unpriced. Prices are stored as USD per 1M tokens and
+are meant to be edited by the user when OpenAI pricing changes.
 
 ## Frontend Development
 
