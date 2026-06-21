@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cornelia/oai-response-meter/internal/event"
 	_ "modernc.org/sqlite"
@@ -73,9 +74,9 @@ func (s *Store) WriteBatch(ctx context.Context, events []event.Usage) (WriteResu
 
 	stmt, err := tx.PrepareContext(ctx, `
 insert or ignore into usage_events (
-  ts, source, transport, host, path, response_id, model,
+  ts, source, transport, host, path, response_id, previous_response_id, chain_root_response_id, model,
   input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("prepare insert: %w", err)
@@ -84,6 +85,7 @@ insert or ignore into usage_events (
 
 	result := WriteResult{}
 	for _, usage := range events {
+		usage.ChainRootResponseID = s.chainRoot(ctx, tx, usage)
 		res, err := stmt.ExecContext(ctx,
 			usage.Timestamp,
 			usage.Source,
@@ -91,6 +93,8 @@ insert or ignore into usage_events (
 			usage.Host,
 			usage.Path,
 			usage.ResponseID,
+			usage.PreviousResponseID,
+			usage.ChainRootResponseID,
 			usage.Model,
 			usage.InputTokens,
 			usage.OutputTokens,
@@ -108,6 +112,9 @@ insert or ignore into usage_events (
 		if affected == 0 {
 			result.Duplicates++
 			continue
+		}
+		if err := s.repairDescendants(ctx, tx, usage.ResponseID, usage.ChainRootResponseID); err != nil {
+			return WriteResult{}, err
 		}
 		result.Inserted++
 		line, err := usage.MarshalJSONLine()
@@ -128,6 +135,47 @@ insert or ignore into usage_events (
 	return result, nil
 }
 
+func (s *Store) chainRoot(ctx context.Context, tx *sql.Tx, usage event.Usage) string {
+	if usage.PreviousResponseID == "" {
+		return usage.ResponseID
+	}
+	var parentRoot string
+	err := tx.QueryRowContext(ctx,
+		`select chain_root_response_id from usage_events where response_id = ?`,
+		usage.PreviousResponseID,
+	).Scan(&parentRoot)
+	if err == nil && parentRoot != "" {
+		return parentRoot
+	}
+	return usage.PreviousResponseID
+}
+
+func (s *Store) repairDescendants(ctx context.Context, tx *sql.Tx, responseID, rootID string) error {
+	if responseID == "" || rootID == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+with recursive descendants(response_id) as (
+  select response_id
+  from usage_events
+  where previous_response_id = ?
+
+  union all
+
+  select child.response_id
+  from usage_events child
+  join descendants d on child.previous_response_id = d.response_id
+)
+update usage_events
+set chain_root_response_id = ?
+where response_id in (select response_id from descendants)
+`, responseID, rootID)
+	if err != nil {
+		return fmt.Errorf("repair descendants for %q: %w", responseID, err)
+	}
+	return nil
+}
+
 func (s *Store) init(ctx context.Context) error {
 	statements := []string{
 		`pragma journal_mode = WAL`,
@@ -141,6 +189,8 @@ func (s *Store) init(ctx context.Context) error {
   host text not null,
   path text not null,
   response_id text not null unique,
+  previous_response_id text not null default '',
+  chain_root_response_id text not null default '',
   model text,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
@@ -151,13 +201,25 @@ func (s *Store) init(ctx context.Context) error {
 )`,
 		`create index if not exists idx_usage_events_ts on usage_events(ts)`,
 		`create index if not exists idx_usage_events_model_ts on usage_events(model, ts)`,
+		`alter table usage_events add column previous_response_id text not null default ''`,
+		`alter table usage_events add column chain_root_response_id text not null default ''`,
+		`update usage_events set chain_root_response_id = response_id where chain_root_response_id = ''`,
+		`create index if not exists idx_usage_events_previous_response_id on usage_events(previous_response_id)`,
+		`create index if not exists idx_usage_events_chain_root_response_id on usage_events(chain_root_response_id)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			if isDuplicateColumn(err) {
+				continue
+			}
 			return fmt.Errorf("init sqlite: %w", err)
 		}
 	}
 	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column name")
 }
 
 func ensureParent(path string) error {

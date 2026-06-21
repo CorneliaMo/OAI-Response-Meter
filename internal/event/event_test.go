@@ -11,6 +11,8 @@ func TestDecodeValidUsage(t *testing.T) {
 		"host": "chatgpt.com",
 		"path": "/backend-api/codex",
 		"response_id": "resp_123",
+		"previous_response_id": "resp_parent",
+		"chain_root_response_id": "resp_root",
 		"model": "gpt-test",
 		"input_tokens": 10,
 		"output_tokens": 20,
@@ -23,7 +25,7 @@ func TestDecodeValidUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if got.ResponseID != "resp_123" || got.TotalTokens != 30 {
+	if got.ResponseID != "resp_123" || got.PreviousResponseID != "resp_parent" || got.ChainRootResponseID != "resp_root" || got.TotalTokens != 30 {
 		t.Fatalf("Decode() = %+v", got)
 	}
 }

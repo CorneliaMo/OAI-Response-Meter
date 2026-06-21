@@ -150,8 +150,9 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 			d.logf("invalid datagram bytes=%d error=%v", n, err)
 			continue
 		}
-		d.logf("received response_id=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
+		d.logf("received response_id=%s previous_response_id=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
 			usage.ResponseID,
+			usage.PreviousResponseID,
 			usage.Transport,
 			usage.Host,
 			usage.Path,

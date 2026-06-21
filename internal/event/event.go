@@ -11,19 +11,21 @@ import (
 const SchemaVersion = 1
 
 type Usage struct {
-	Schema          int    `json:"schema"`
-	Timestamp       string `json:"ts"`
-	Source          string `json:"source"`
-	Transport       string `json:"transport"`
-	Host            string `json:"host"`
-	Path            string `json:"path"`
-	ResponseID      string `json:"response_id"`
-	Model           string `json:"model"`
-	InputTokens     int64  `json:"input_tokens"`
-	OutputTokens    int64  `json:"output_tokens"`
-	TotalTokens     int64  `json:"total_tokens"`
-	CachedTokens    int64  `json:"cached_tokens"`
-	ReasoningTokens int64  `json:"reasoning_tokens"`
+	Schema              int    `json:"schema"`
+	Timestamp           string `json:"ts"`
+	Source              string `json:"source"`
+	Transport           string `json:"transport"`
+	Host                string `json:"host"`
+	Path                string `json:"path"`
+	ResponseID          string `json:"response_id"`
+	PreviousResponseID  string `json:"previous_response_id"`
+	ChainRootResponseID string `json:"chain_root_response_id"`
+	Model               string `json:"model"`
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	TotalTokens         int64  `json:"total_tokens"`
+	CachedTokens        int64  `json:"cached_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
 }
 
 func Decode(data []byte) (Usage, error) {

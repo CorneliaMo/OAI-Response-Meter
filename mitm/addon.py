@@ -153,6 +153,7 @@ def event_from_response(response: dict[str, Any], transport: str, host: str, pat
         "host": host,
         "path": path,
         "response_id": response_id,
+        "previous_response_id": response.get("previous_response_id") or "",
         "model": response.get("model", ""),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,

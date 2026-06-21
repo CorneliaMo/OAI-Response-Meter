@@ -115,6 +115,7 @@ The meter records only usage metadata:
 - transport
 - host and path
 - response id
+- previous response id and chain root response id
 - model
 - input, output, total, cached, and reasoning token counts
 
