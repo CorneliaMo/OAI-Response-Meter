@@ -17,6 +17,9 @@ func TestParseRunConfig(t *testing.T) {
 		"--jsonl", "/tmp/usage.jsonl",
 		"--listen-host", "localhost",
 		"--listen-port", "18080",
+		"--dashboard-host", "0.0.0.0",
+		"--dashboard-port", "19090",
+		"--no-dashboard",
 		"--queue-size", "123",
 		"--verbose",
 	})
@@ -25,6 +28,9 @@ func TestParseRunConfig(t *testing.T) {
 	}
 	if config.Root != "/tmp/project" || config.ListenPort != "18080" || config.QueueSize != 123 {
 		t.Fatalf("parseRunConfig() = %+v", config)
+	}
+	if config.DashboardHost != "0.0.0.0" || config.DashboardPort != "19090" || !config.NoDashboard {
+		t.Fatalf("dashboard config = %+v", config)
 	}
 	if config.ConfigPath != "/tmp/config.json" || config.UpstreamProxy != "http://127.0.0.1:7890" {
 		t.Fatalf("proxy config = %+v", config)
@@ -112,6 +118,9 @@ func TestFillDefaults(t *testing.T) {
 		t.Fatalf("JSONL = %q", config.JSONL)
 	}
 	if config.ListenHost != "127.0.0.1" || config.ListenPort != "8080" || config.QueueSize != 10000 {
+		t.Fatalf("defaults = %+v", config)
+	}
+	if config.DashboardHost != "127.0.0.1" || config.DashboardPort != "8081" {
 		t.Fatalf("defaults = %+v", config)
 	}
 }

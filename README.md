@@ -12,6 +12,8 @@ daemon, which writes SQLite and JSONL records.
 - `mitm/addon.py` observes HTTPS JSON, SSE, and WebSocket completed Responses
   API responses.
 - `oai-meter run` starts the Go daemon and wraps `mitmdump`.
+- `oai-meter run` also starts a local dashboard at `http://127.0.0.1:8081`
+  by default.
 - Usage records are written to `data/usage.db` and `data/usage.jsonl` by default.
 - The project assumes a compatible `mitmdump` binary already exists at
   `bin/mitmdump`, or that you pass `--mitmdump`.
@@ -44,6 +46,12 @@ Then configure the client or system proxy to use:
 http://127.0.0.1:8080
 ```
 
+When the command starts successfully, it also prints a dashboard URL such as:
+
+```text
+dashboard: http://127.0.0.1:8081
+```
+
 mitmproxy certificate trust is still required for HTTPS MITM. Follow the normal
 mitmproxy certificate setup for your OS.
 
@@ -58,6 +66,9 @@ Useful flags:
 --upstream-proxy upstream explicit HTTP(S) proxy URL
 --listen-host   mitmdump listen host, default 127.0.0.1
 --listen-port   mitmdump listen port, default 8080
+--no-dashboard  disable the local dashboard
+--dashboard-host dashboard listen host, default 127.0.0.1
+--dashboard-port dashboard listen port, default 8081
 --queue-size    Python addon queue size, default 10000
 --verbose       print sanitized debug logs
 ```
@@ -127,10 +138,39 @@ The scope is intentionally narrow:
 It does not persist Authorization headers, cookies, prompts, request bodies,
 response bodies, generated content, or full WebSocket messages.
 
+The dashboard API is read-only and exposes only the same stored metadata:
+timestamps, transport, host, path, response IDs, model, and token counts.
+
+## Dashboard
+
+The embedded dashboard polls every 5 seconds and includes:
+
+- overview KPI cards
+- token trend chart
+- model breakdown chart
+- conversation chain rollups
+- raw usage event table
+
+No prompt, request body, response body, generated content, or message text is
+rendered by the dashboard.
+
+## Frontend Development
+
+The frontend source lives in `frontend/` and builds into
+`internal/dashboard/static/` for Go embedding.
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
 ## Development Checks
 
 ```bash
 go test ./...
+cd frontend && npm run typecheck
+cd frontend && npm run build
 python3 -m py_compile mitm/addon.py mitm/addon_test.py
 python3 -m unittest discover -s mitm -p '*_test.py'
 ```

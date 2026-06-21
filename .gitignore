@@ -10,3 +10,5 @@ bin/*
 coverage.out
 __pycache__/
 *.py[cod]
+
+frontend/node_modules/

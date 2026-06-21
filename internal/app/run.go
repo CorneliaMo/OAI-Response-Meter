@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cornelia/oai-response-meter/internal/daemon"
+	"github.com/cornelia/oai-response-meter/internal/dashboard"
 	"github.com/cornelia/oai-response-meter/internal/mitmwrap"
 	"github.com/cornelia/oai-response-meter/internal/store"
 )
@@ -27,6 +29,9 @@ type RunConfig struct {
 	JSONL         string
 	ListenHost    string
 	ListenPort    string
+	NoDashboard   bool
+	DashboardHost string
+	DashboardPort string
 	QueueSize     int
 	Verbose       bool
 	ConfigPath    string
@@ -97,6 +102,19 @@ func Run(ctx context.Context, config RunConfig) error {
 		return err
 	}
 
+	var dashboardServer *dashboard.Server
+	if !config.NoDashboard {
+		dashboardServer, err = dashboard.Start(ctx, dashboard.Config{
+			Addr:   net.JoinHostPort(config.DashboardHost, config.DashboardPort),
+			DBPath: config.DB,
+		})
+		if err != nil {
+			return err
+		}
+		defer dashboardServer.Close(context.Background())
+		fmt.Fprintf(os.Stdout, "dashboard: %s\n", dashboardServer.URL())
+	}
+
 	daemonDone := make(chan error, 1)
 	go func() { daemonDone <- usageDaemon.Run(ctx) }()
 	if err := waitForSocket(ctx, config.Socket, 2*time.Second); err != nil {
@@ -146,6 +164,9 @@ func parseRunConfig(args []string) (RunConfig, error) {
 	fs.StringVar(&config.UpstreamProxy, "upstream-proxy", "", "upstream explicit HTTP(S) proxy URL")
 	fs.StringVar(&config.ListenHost, "listen-host", "127.0.0.1", "mitmproxy listen host")
 	fs.StringVar(&config.ListenPort, "listen-port", "8080", "mitmproxy listen port")
+	fs.BoolVar(&config.NoDashboard, "no-dashboard", false, "disable local dashboard")
+	fs.StringVar(&config.DashboardHost, "dashboard-host", "127.0.0.1", "dashboard listen host")
+	fs.StringVar(&config.DashboardPort, "dashboard-port", "8081", "dashboard listen port")
 	fs.IntVar(&config.QueueSize, "queue-size", 10000, "addon queue size")
 	fs.BoolVar(&config.Verbose, "verbose", false, "print detailed sanitized debug logs")
 	if err := fs.Parse(args); err != nil {
@@ -231,6 +252,12 @@ func fillDefaults(config *RunConfig) {
 	}
 	if config.ListenPort == "" {
 		config.ListenPort = "8080"
+	}
+	if config.DashboardHost == "" {
+		config.DashboardHost = "127.0.0.1"
+	}
+	if config.DashboardPort == "" {
+		config.DashboardPort = "8081"
 	}
 	if config.QueueSize <= 0 {
 		config.QueueSize = 10000
