@@ -216,6 +216,49 @@ func TestWriteBatchDeduplicatesByResponseID(t *testing.T) {
 	}
 }
 
+func TestWriteRateLimitBatchStoresRawEventAndResetWindows(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "usage.db")
+	jsonlPath := filepath.Join(dir, "usage.jsonl")
+	store, err := Open(ctx, dbPath, jsonlPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	result, err := store.WriteRateLimitBatch(ctx, []event.RateLimits{sampleRateLimits()})
+	if err != nil {
+		t.Fatalf("WriteRateLimitBatch() error = %v", err)
+	}
+	if result.Inserted != 1 {
+		t.Fatalf("WriteRateLimitBatch() result = %+v", result)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+	var plan string
+	var primaryResetAt, secondaryResetAt int64
+	var raw string
+	if err := db.QueryRowContext(ctx, `select plan_type, primary_reset_at, secondary_reset_at, raw_json from codex_rate_limit_events`).Scan(&plan, &primaryResetAt, &secondaryResetAt, &raw); err != nil {
+		t.Fatalf("query rate limit event error = %v", err)
+	}
+	if plan != "plus" || primaryResetAt != 1781881906 || secondaryResetAt != 1782380758 || !strings.Contains(raw, "codex.rate_limits") {
+		t.Fatalf("stored rate limit event = plan:%q primary:%d secondary:%d raw:%q", plan, primaryResetAt, secondaryResetAt, raw)
+	}
+
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"event_type":"codex_rate_limits"`) {
+		t.Fatalf("jsonl missing rate limits event: %s", data)
+	}
+}
+
 func sampleUsage(responseID string) event.Usage {
 	return event.Usage{
 		Schema:             event.SchemaVersion,
@@ -232,5 +275,29 @@ func sampleUsage(responseID string) event.Usage {
 		TotalTokens:        30,
 		CachedTokens:       4,
 		ReasoningTokens:    5,
+	}
+}
+
+func sampleRateLimits() event.RateLimits {
+	return event.RateLimits{
+		Schema:                     event.SchemaVersion,
+		EventType:                  event.RateLimitsEventType,
+		Timestamp:                  "2026-06-20T12:00:00Z",
+		Source:                     "mitmproxy",
+		Transport:                  "websocket",
+		Host:                       "chatgpt.com",
+		Path:                       "/backend-api/codex",
+		PlanType:                   "plus",
+		Allowed:                    true,
+		LimitReached:               false,
+		PrimaryUsedPercent:         1,
+		PrimaryWindowMinutes:       300,
+		PrimaryResetAfterSeconds:   18000,
+		PrimaryResetAt:             1781881906,
+		SecondaryUsedPercent:       8,
+		SecondaryWindowMinutes:     10080,
+		SecondaryResetAfterSeconds: 516852,
+		SecondaryResetAt:           1782380758,
+		RawJSON:                    `{"type":"codex.rate_limits"}`,
 	}
 }

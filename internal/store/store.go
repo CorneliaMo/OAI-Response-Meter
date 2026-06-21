@@ -135,6 +135,72 @@ insert or ignore into usage_events (
 	return result, nil
 }
 
+func (s *Store) WriteRateLimitBatch(ctx context.Context, events []event.RateLimits) (WriteResult, error) {
+	if len(events) == 0 {
+		return WriteResult{}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+insert into codex_rate_limit_events (
+  ts, source, transport, host, path, plan_type, allowed, limit_reached,
+  primary_used_percent, primary_window_minutes, primary_reset_after_seconds, primary_reset_at,
+  secondary_used_percent, secondary_window_minutes, secondary_reset_after_seconds, secondary_reset_at,
+  raw_json
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("prepare rate limit insert: %w", err)
+	}
+	defer stmt.Close()
+
+	result := WriteResult{}
+	for _, item := range events {
+		if _, err := stmt.ExecContext(ctx,
+			item.Timestamp,
+			item.Source,
+			item.Transport,
+			item.Host,
+			item.Path,
+			item.PlanType,
+			item.Allowed,
+			item.LimitReached,
+			item.PrimaryUsedPercent,
+			item.PrimaryWindowMinutes,
+			item.PrimaryResetAfterSeconds,
+			item.PrimaryResetAt,
+			item.SecondaryUsedPercent,
+			item.SecondaryWindowMinutes,
+			item.SecondaryResetAfterSeconds,
+			item.SecondaryResetAt,
+			item.RawJSON,
+		); err != nil {
+			return WriteResult{}, fmt.Errorf("insert rate limits event: %w", err)
+		}
+		result.Inserted++
+		line, err := item.MarshalJSONLine()
+		if err != nil {
+			return WriteResult{}, fmt.Errorf("marshal rate limits jsonl: %w", err)
+		}
+		if _, err := s.jsonl.Write(line); err != nil {
+			return WriteResult{}, fmt.Errorf("write rate limits jsonl: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return WriteResult{}, fmt.Errorf("commit tx: %w", err)
+	}
+	if err := s.jsonl.Sync(); err != nil {
+		return WriteResult{}, fmt.Errorf("sync jsonl: %w", err)
+	}
+	return result, nil
+}
+
 func (s *Store) chainRoot(ctx context.Context, tx *sql.Tx, usage event.Usage) string {
 	if usage.PreviousResponseID == "" {
 		return usage.ResponseID
@@ -206,6 +272,30 @@ func (s *Store) init(ctx context.Context) error {
 		`update usage_events set chain_root_response_id = response_id where chain_root_response_id = ''`,
 		`create index if not exists idx_usage_events_previous_response_id on usage_events(previous_response_id)`,
 		`create index if not exists idx_usage_events_chain_root_response_id on usage_events(chain_root_response_id)`,
+		`create table if not exists codex_rate_limit_events (
+  id integer primary key autoincrement,
+  ts text not null,
+  source text not null,
+  transport text not null,
+  host text not null,
+  path text not null,
+  plan_type text not null default '',
+  allowed integer not null,
+  limit_reached integer not null,
+  primary_used_percent integer not null default 0,
+  primary_window_minutes integer not null default 0,
+  primary_reset_after_seconds integer not null default 0,
+  primary_reset_at integer not null default 0,
+  secondary_used_percent integer not null default 0,
+  secondary_window_minutes integer not null default 0,
+  secondary_reset_after_seconds integer not null default 0,
+  secondary_reset_at integer not null default 0,
+  raw_json text not null,
+  created_at text not null default current_timestamp
+)`,
+		`create index if not exists idx_codex_rate_limit_events_ts on codex_rate_limit_events(ts)`,
+		`create index if not exists idx_codex_rate_limit_events_primary_reset_at on codex_rate_limit_events(primary_reset_at)`,
+		`create index if not exists idx_codex_rate_limit_events_secondary_reset_at on codex_rate_limit_events(secondary_reset_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

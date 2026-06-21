@@ -123,10 +123,56 @@ def extract_websocket_usage(flow: Any) -> Optional[dict[str, Any]]:
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None
+    if payload.get("type") == "codex.rate_limits":
+        return rate_limits_event_from_payload(payload, "websocket", host, path)
     if payload.get("type") != "response.completed":
         return None
     response = payload.get("response", payload)
     return event_from_response(response, "websocket", host, path)
+
+
+def rate_limits_event_from_payload(payload: dict[str, Any], transport: str, host: str, path: str) -> Optional[dict[str, Any]]:
+    raw_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return {
+            "schema": SCHEMA_VERSION,
+            "event_type": "codex_rate_limits",
+            "ts": _now_rfc3339(),
+            "source": "mitmproxy",
+            "transport": transport,
+            "host": host,
+            "path": path,
+            "raw_json": raw_json,
+        }
+    primary = _rate_limit_window(rate_limits.get("primary"))
+    secondary = _rate_limit_window(rate_limits.get("secondary"))
+    event = {
+        "schema": SCHEMA_VERSION,
+        "event_type": "codex_rate_limits",
+        "ts": _now_rfc3339(),
+        "source": "mitmproxy",
+        "transport": transport,
+        "host": host,
+        "path": path,
+        "plan_type": payload.get("plan_type") or "",
+        "allowed": bool(rate_limits.get("allowed")),
+        "limit_reached": bool(rate_limits.get("limit_reached")),
+        "raw_json": raw_json,
+    }
+    event.update(
+        {
+            "primary_used_percent": primary["used_percent"],
+            "primary_window_minutes": primary["window_minutes"],
+            "primary_reset_after_seconds": primary["reset_after_seconds"],
+            "primary_reset_at": primary["reset_at"],
+            "secondary_used_percent": secondary["used_percent"],
+            "secondary_window_minutes": secondary["window_minutes"],
+            "secondary_reset_after_seconds": secondary["reset_after_seconds"],
+            "secondary_reset_at": secondary["reset_at"],
+        }
+    )
+    return event
 
 
 def event_from_response(response: dict[str, Any], transport: str, host: str, path: str) -> Optional[dict[str, Any]]:
@@ -147,7 +193,7 @@ def event_from_response(response: dict[str, Any], transport: str, host: str, pat
 
     return {
         "schema": SCHEMA_VERSION,
-        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "ts": _now_rfc3339(),
         "source": "mitmproxy",
         "transport": transport,
         "host": host,
@@ -161,6 +207,21 @@ def event_from_response(response: dict[str, Any], transport: str, host: str, pat
         "cached_tokens": _int(input_details.get("cached_tokens")),
         "reasoning_tokens": _int(output_details.get("reasoning_tokens")),
     }
+
+
+def _rate_limit_window(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "used_percent": _int(value.get("used_percent")),
+        "window_minutes": _int(value.get("window_minutes")),
+        "reset_after_seconds": _int(value.get("reset_after_seconds")),
+        "reset_at": _int(value.get("reset_at")),
+    }
+
+
+def _now_rfc3339() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _extract_sse_completed(body: str) -> Optional[dict[str, Any]]:

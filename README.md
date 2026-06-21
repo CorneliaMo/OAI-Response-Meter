@@ -141,6 +141,8 @@ The meter records only usage metadata:
 - previous response id and chain root response id
 - model
 - input, output, total, cached, and reasoning token counts
+- observed Codex rate-limit metadata, when an internal `codex.rate_limits`
+  WebSocket event is present
 
 The scope is intentionally narrow:
 
@@ -152,6 +154,11 @@ response bodies, generated content, or full WebSocket messages.
 
 The dashboard API is read-only and exposes only the same stored metadata:
 timestamps, transport, host, path, response IDs, model, and token counts.
+
+`codex.rate_limits` is not a documented OpenAI API event. When it appears, the
+meter stores it best-effort in a separate table with the raw JSON and extracted
+window reset timestamps. If expected fields are missing, the event is skipped
+and `--verbose` logs a short hint.
 
 ## Dashboard
 

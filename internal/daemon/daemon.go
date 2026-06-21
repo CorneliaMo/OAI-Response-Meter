@@ -24,11 +24,12 @@ type Config struct {
 }
 
 type Counters struct {
-	Received   uint64
-	Written    uint64
-	Duplicates uint64
-	Invalid    uint64
-	WriteError uint64
+	Received         uint64
+	Written          uint64
+	Duplicates       uint64
+	RateLimitWritten uint64
+	Invalid          uint64
+	WriteError       uint64
 }
 
 type Daemon struct {
@@ -41,6 +42,7 @@ type Daemon struct {
 
 type EventStore interface {
 	WriteBatch(context.Context, []event.Usage) (store.WriteResult, error)
+	WriteRateLimitBatch(context.Context, []event.RateLimits) (store.WriteResult, error)
 }
 
 func New(config Config, sink EventStore) (*Daemon, error) {
@@ -80,21 +82,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.logf("stopped socket=%s counters=%+v", d.config.SocketPath, d.Counters())
 	}()
 
-	events := make(chan event.Usage, d.config.BatchSize*2)
+	events := make(chan event.Datagram, d.config.BatchSize*2)
 	errc := make(chan error, 1)
 	go d.readLoop(ctx, conn, events, errc)
 
 	ticker := time.NewTicker(d.config.FlushInterval)
 	defer ticker.Stop()
-	batch := make([]event.Usage, 0, d.config.BatchSize)
+	usageBatch := make([]event.Usage, 0, d.config.BatchSize)
+	rateLimitBatch := make([]event.RateLimits, 0, d.config.BatchSize)
 
 	flush := func() {
-		if len(batch) == 0 {
-			return
+		if len(usageBatch) > 0 {
+			pending := usageBatch
+			usageBatch = make([]event.Usage, 0, d.config.BatchSize)
+			d.writeUsage(ctx, pending)
 		}
-		pending := batch
-		batch = make([]event.Usage, 0, d.config.BatchSize)
-		d.write(ctx, pending)
+		if len(rateLimitBatch) > 0 {
+			pending := rateLimitBatch
+			rateLimitBatch = make([]event.RateLimits, 0, d.config.BatchSize)
+			d.writeRateLimits(ctx, pending)
+		}
 	}
 
 	for {
@@ -105,9 +112,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case err := <-errc:
 			flush()
 			return err
-		case usage := <-events:
-			batch = append(batch, usage)
-			if len(batch) >= d.config.BatchSize {
+		case item := <-events:
+			switch item.Kind {
+			case event.KindUsage:
+				usageBatch = append(usageBatch, item.Usage)
+			case event.KindRateLimits:
+				rateLimitBatch = append(rateLimitBatch, item.RateLimits)
+			}
+			if len(usageBatch)+len(rateLimitBatch) >= d.config.BatchSize {
 				flush()
 			}
 		case <-ticker.C:
@@ -122,7 +134,7 @@ func (d *Daemon) Counters() Counters {
 	return d.counters
 }
 
-func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<- event.Usage, errc chan<- error) {
+func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<- event.Datagram, errc chan<- error) {
 	buffer := make([]byte, maxDatagramSize)
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
@@ -144,12 +156,25 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 			return
 		}
 		d.add(func(c *Counters) { c.Received++ })
-		usage, err := event.Decode(buffer[:n])
+		item, err := event.DecodeDatagram(buffer[:n])
 		if err != nil {
 			d.add(func(c *Counters) { c.Invalid++ })
 			d.logf("invalid datagram bytes=%d error=%v", n, err)
 			continue
 		}
+		d.logDatagram(item)
+		select {
+		case events <- item:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (d *Daemon) logDatagram(item event.Datagram) {
+	switch item.Kind {
+	case event.KindUsage:
+		usage := item.Usage
 		d.logf("received response_id=%s previous_response_id=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
 			usage.ResponseID,
 			usage.PreviousResponseID,
@@ -163,26 +188,45 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 			usage.CachedTokens,
 			usage.ReasoningTokens,
 		)
-		select {
-		case events <- usage:
-		case <-ctx.Done():
-			return
-		}
+	case event.KindRateLimits:
+		limits := item.RateLimits
+		d.logf("received codex_rate_limits plan=%s allowed=%t limit_reached=%t primary_reset_at=%d secondary_reset_at=%d primary_used=%d secondary_used=%d",
+			limits.PlanType,
+			limits.Allowed,
+			limits.LimitReached,
+			limits.PrimaryResetAt,
+			limits.SecondaryResetAt,
+			limits.PrimaryUsedPercent,
+			limits.SecondaryUsedPercent,
+		)
 	}
 }
 
-func (d *Daemon) write(ctx context.Context, batch []event.Usage) {
+func (d *Daemon) writeUsage(ctx context.Context, batch []event.Usage) {
 	result, err := d.store.WriteBatch(ctx, batch)
 	if err != nil {
 		d.add(func(c *Counters) { c.WriteError++ })
-		d.logf("write failed batch=%d error=%v", len(batch), err)
+		d.logf("write usage failed batch=%d error=%v", len(batch), err)
 		return
 	}
 	d.add(func(c *Counters) {
 		c.Written += uint64(result.Inserted)
 		c.Duplicates += uint64(result.Duplicates)
 	})
-	d.logf("write batch=%d inserted=%d duplicates=%d", len(batch), result.Inserted, result.Duplicates)
+	d.logf("write usage batch=%d inserted=%d duplicates=%d", len(batch), result.Inserted, result.Duplicates)
+}
+
+func (d *Daemon) writeRateLimits(ctx context.Context, batch []event.RateLimits) {
+	result, err := d.store.WriteRateLimitBatch(ctx, batch)
+	if err != nil {
+		d.add(func(c *Counters) { c.WriteError++ })
+		d.logf("write rate_limits failed batch=%d error=%v", len(batch), err)
+		return
+	}
+	d.add(func(c *Counters) {
+		c.RateLimitWritten += uint64(result.Inserted)
+	})
+	d.logf("write rate_limits batch=%d inserted=%d", len(batch), result.Inserted)
 }
 
 func (d *Daemon) add(update func(*Counters)) {

@@ -68,6 +68,38 @@ func TestDaemonCountsInvalidDatagrams(t *testing.T) {
 	}
 }
 
+func TestDaemonReceivesRateLimitDatagramsAndWritesStore(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sink := &memoryStore{}
+	socketPath := filepath.Join(t.TempDir(), "meter.sock")
+	daemon, err := New(Config{
+		SocketPath:    socketPath,
+		BatchSize:     1,
+		FlushInterval: 50 * time.Millisecond,
+	}, sink)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(ctx) }()
+	waitForSocket(t, socketPath)
+
+	sendDatagram(t, socketPath, sampleRateLimitDatagram())
+	waitFor(t, func() bool { return sink.rateLimitCount() == 1 })
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	counters := daemon.Counters()
+	if counters.Received != 1 || counters.RateLimitWritten != 1 {
+		t.Fatalf("Counters() = %+v", counters)
+	}
+}
+
 func TestDaemonFlushesOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	sink := &memoryStore{}
@@ -96,8 +128,9 @@ func TestDaemonFlushesOnShutdown(t *testing.T) {
 }
 
 type memoryStore struct {
-	mu     sync.Mutex
-	events []event.Usage
+	mu         sync.Mutex
+	events     []event.Usage
+	rateLimits []event.RateLimits
 }
 
 func (s *memoryStore) WriteBatch(_ context.Context, events []event.Usage) (store.WriteResult, error) {
@@ -107,10 +140,23 @@ func (s *memoryStore) WriteBatch(_ context.Context, events []event.Usage) (store
 	return store.WriteResult{Inserted: len(events)}, nil
 }
 
+func (s *memoryStore) WriteRateLimitBatch(_ context.Context, events []event.RateLimits) (store.WriteResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rateLimits = append(s.rateLimits, events...)
+	return store.WriteResult{Inserted: len(events)}, nil
+}
+
 func (s *memoryStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.events)
+}
+
+func (s *memoryStore) rateLimitCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.rateLimits)
 }
 
 func sampleDatagram(responseID string) []byte {
@@ -126,6 +172,30 @@ func sampleDatagram(responseID string) []byte {
 		"input_tokens": 10,
 		"output_tokens": 20,
 		"total_tokens": 30
+	}`)
+}
+
+func sampleRateLimitDatagram() []byte {
+	return []byte(`{
+		"schema": 1,
+		"event_type": "codex_rate_limits",
+		"ts": "2026-06-20T12:00:00Z",
+		"source": "mitmproxy",
+		"transport": "websocket",
+		"host": "chatgpt.com",
+		"path": "/backend-api/codex",
+		"plan_type": "plus",
+		"allowed": true,
+		"limit_reached": false,
+		"primary_used_percent": 1,
+		"primary_window_minutes": 300,
+		"primary_reset_after_seconds": 18000,
+		"primary_reset_at": 1781881906,
+		"secondary_used_percent": 8,
+		"secondary_window_minutes": 10080,
+		"secondary_reset_after_seconds": 516852,
+		"secondary_reset_at": 1782380758,
+		"raw_json": "{\"type\":\"codex.rate_limits\"}"
 	}`)
 }
 

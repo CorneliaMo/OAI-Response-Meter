@@ -72,6 +72,43 @@ class AddonTest(unittest.TestCase):
         self.assertEqual(event["transport"], "websocket")
         self.assertEqual(event["response_id"], "resp_3")
 
+    def test_extract_websocket_codex_rate_limits(self):
+        flow = Obj(
+            request=Obj(host="chatgpt.com", path="/backend-api/codex"),
+            websocket=Obj(
+                messages=[
+                    Obj(
+                        from_client=False,
+                        text='{"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":1,"window_minutes":300,"reset_after_seconds":18000,"reset_at":1781881906},"secondary":{"used_percent":8,"window_minutes":10080,"reset_after_seconds":516852,"reset_at":1782380758}},"code_review_rate_limits":null,"additional_rate_limits":null,"credits":null,"promo":null}',
+                    )
+                ]
+            ),
+        )
+
+        event = extract_websocket_usage(flow)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_type"], "codex_rate_limits")
+        self.assertEqual(event["plan_type"], "plus")
+        self.assertTrue(event["allowed"])
+        self.assertFalse(event["limit_reached"])
+        self.assertEqual(event["primary_reset_at"], 1781881906)
+        self.assertEqual(event["secondary_reset_at"], 1782380758)
+        self.assertIn("codex.rate_limits", event["raw_json"])
+
+    def test_extract_websocket_codex_rate_limits_without_expected_keys(self):
+        flow = Obj(
+            request=Obj(host="chatgpt.com", path="/backend-api/codex"),
+            websocket=Obj(messages=[Obj(from_client=False, text='{"type":"codex.rate_limits"}')]),
+        )
+
+        event = extract_websocket_usage(flow)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_type"], "codex_rate_limits")
+        self.assertIn("raw_json", event)
+        self.assertNotIn("primary_reset_at", event)
+
     def test_ignores_client_websocket_messages(self):
         flow = Obj(
             request=Obj(host="chatgpt.com", path="/backend-api/codex"),
