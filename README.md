@@ -149,6 +149,11 @@ The scope is intentionally narrow:
 - `api.openai.com/v1/responses`
 - `chatgpt.com/backend-api/codex`
 
+The mitmproxy wrapper also sets `allow_hosts` to `api.openai.com` and
+`chatgpt.com` by default. Other HTTPS traffic is not intercepted by mitmproxy's
+HTTP/WebSocket addon path; when upstream mode is configured, that traffic is
+still forwarded through the configured upstream proxy.
+
 It does not persist Authorization headers, cookies, prompts, request bodies,
 response bodies, generated content, or full WebSocket messages.
 

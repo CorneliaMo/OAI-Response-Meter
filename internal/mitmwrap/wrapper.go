@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 )
 
+const DefaultAllowHostsPattern = `^(api\.openai\.com|chatgpt\.com)(:443)?$`
+
 type Config struct {
 	MitmdumpPath  string
 	AddonPath     string
@@ -68,6 +70,7 @@ func Command(ctx context.Context, config Config) (*exec.Cmd, error) {
 	if config.UpstreamProxy != "" {
 		args = append(args, "--mode", "upstream:"+config.UpstreamProxy)
 	}
+	args = append(args, "--set", "allow_hosts="+DefaultAllowHostsPattern)
 	if config.Quiet {
 		args = append(args, "--quiet")
 	}
