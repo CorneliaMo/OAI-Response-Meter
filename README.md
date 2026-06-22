@@ -191,6 +191,11 @@ direct baseline with the same request through the local mitmproxy listener. The
 examples below use `hey` and public test endpoints; results depend on your
 network and on the public endpoint's own tail latency.
 
+By default, the wrapper sets mitmproxy `allow_hosts` to only `api.openai.com`
+and `chatgpt.com`. The non-target requests below should therefore pass through
+mitmproxy without HTTP/WebSocket interception or addon parsing. If upstream mode
+is configured, they still use that upstream proxy.
+
 Small requests:
 
 ```bash
@@ -214,6 +219,8 @@ hey -z 30s -c 10 \
 Dense small-request load:
 
 ```bash
+hey -z 60s -c 200 https://httpbingo.org/get
+
 hey -z 60s -c 200 \
   -x http://127.0.0.1:8080 \
   https://httpbingo.org/get
@@ -227,8 +234,8 @@ Compare these fields between direct and proxied runs:
 - non-2xx/3xx status codes
 
 These checks intentionally exercise non-target traffic. For such requests the
-addon should miss its scope quickly, so the measured overhead is mostly
-mitmproxy, TLS interception, and connection handling rather than usage
+measured overhead should mostly be mitmproxy's tunnel forwarding and connection
+handling, not TLS interception, WebSocket/HTTP event handling, or usage
 extraction.
 
 ## Frontend Development
