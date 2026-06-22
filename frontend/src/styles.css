@@ -88,6 +88,13 @@ td span {
   padding: 18px;
 }
 
+.heroMetaTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
 .heroMeta p,
 .kpiCard p,
 .microcopy,
@@ -109,6 +116,53 @@ td span {
   display: block;
   margin-top: 6px;
   font-size: 1.35rem;
+}
+
+.languagePicker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.languageButton {
+  cursor: pointer;
+  border: 1px solid rgba(55, 82, 101, 0.18);
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: #1e4d76;
+  background: rgba(30, 77, 118, 0.08);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.languageMenu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 136px;
+  padding: 6px;
+  border: 1px solid rgba(55, 82, 101, 0.18);
+  border-radius: 8px;
+  background: #fbfdfe;
+  box-shadow: 0 16px 35px rgba(25, 43, 56, 0.14);
+}
+
+.languageMenu button {
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #34495e;
+  background: transparent;
+  text-align: left;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.languageMenu button:hover,
+.languageMenu button.active {
+  background: rgba(30, 77, 118, 0.1);
+  color: #1e4d76;
 }
 
 .segmented {
