@@ -179,6 +179,10 @@ The embedded dashboard polls every 5 seconds and includes:
 No prompt, request body, response body, generated content, or message text is
 rendered by the dashboard.
 
+The dashboard sends the browser's IANA time zone to the local API. Day, week,
+month, and year ranges are calculated from that local time zone's calendar
+boundaries, and chart buckets use the same local boundaries.
+
 Estimated cost uses `configs/prices.json` by default and can be overridden with
 `--prices`. Missing price files disable cost estimates, and missing model rates
 mark only those tokens as unpriced. Prices are stored as USD per 1M tokens and

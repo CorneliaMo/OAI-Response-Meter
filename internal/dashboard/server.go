@@ -231,7 +231,7 @@ type apiServer struct {
 }
 
 func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC())
+	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -245,7 +245,7 @@ func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleTimeseries(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC())
+	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -264,7 +264,7 @@ func (s apiServer) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleModels(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC())
+	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -278,7 +278,7 @@ func (s apiServer) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleChains(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC())
+	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -297,7 +297,7 @@ func (s apiServer) handleChains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleEvents(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC())
+	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -351,20 +351,42 @@ func (s apiServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 type queryWindow struct {
-	name   string
-	cutoff time.Time
+	name     string
+	cutoff   time.Time
+	location *time.Location
 }
 
-func parseRange(value string, now time.Time) (queryWindow, error) {
+func requestLocation(r *http.Request) *time.Location {
+	value := strings.TrimSpace(r.URL.Query().Get("tz"))
+	if value == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(value)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+func parseRange(value string, now time.Time, loc *time.Location) (queryWindow, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	localNow := now.In(loc)
+	localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	switch value {
 	case "", "day":
-		return queryWindow{name: "day", cutoff: now.Add(-24 * time.Hour)}, nil
+		return queryWindow{name: "day", cutoff: localStart.UTC(), location: loc}, nil
 	case "week":
-		return queryWindow{name: "week", cutoff: now.Add(-7 * 24 * time.Hour)}, nil
+		weekday := int(localStart.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		return queryWindow{name: "week", cutoff: localStart.AddDate(0, 0, 1-weekday).UTC(), location: loc}, nil
 	case "month":
-		return queryWindow{name: "month", cutoff: now.Add(-30 * 24 * time.Hour)}, nil
+		return queryWindow{name: "month", cutoff: time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc).UTC(), location: loc}, nil
 	case "year":
-		return queryWindow{name: "year", cutoff: now.Add(-365 * 24 * time.Hour)}, nil
+		return queryWindow{name: "year", cutoff: time.Date(localNow.Year(), 1, 1, 0, 0, 0, 0, loc).UTC(), location: loc}, nil
 	default:
 		return queryWindow{}, fmt.Errorf("invalid range %q", value)
 	}
@@ -460,26 +482,19 @@ group by coalesce(nullif(model, ''), '(unknown)')
 }
 
 func queryTimeseries(ctx context.Context, db *sql.DB, window queryWindow, bucket string, catalog *pricing.Catalog) (TimeseriesResponse, error) {
-	pattern := map[string]string{
-		"hour":  "%Y-%m-%dT%H:00:00Z",
-		"day":   "%Y-%m-%dT00:00:00Z",
-		"month": "%Y-%m-01T00:00:00Z",
-	}[bucket]
-	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+	rows, err := db.QueryContext(ctx, `
 select
-  strftime('%s', ts) as bucket_time,
+  ts,
   coalesce(nullif(model, ''), '(unknown)'),
-  count(*),
-  coalesce(sum(total_tokens), 0),
-  coalesce(sum(input_tokens), 0),
-  coalesce(sum(output_tokens), 0),
-  coalesce(sum(cached_tokens), 0),
-  coalesce(sum(reasoning_tokens), 0)
+  total_tokens,
+  input_tokens,
+  output_tokens,
+  cached_tokens,
+  reasoning_tokens
 from usage_events
 where ts >= ?
-group by bucket_time, coalesce(nullif(model, ''), '(unknown)')
-order by bucket_time asc
-`, pattern), window.cutoff.Format(time.RFC3339))
+order by ts asc
+`, window.cutoff.Format(time.RFC3339))
 	if err != nil {
 		return TimeseriesResponse{}, fmt.Errorf("query timeseries: %w", err)
 	}
@@ -488,13 +503,12 @@ order by bucket_time asc
 	resp := TimeseriesResponse{Range: window.name, Bucket: bucket}
 	points := map[string]*TimeseriesPoint{}
 	for rows.Next() {
-		var bucketTime string
+		var ts string
 		var model string
-		var requests, total, input, output, cached, reasoning int64
+		var total, input, output, cached, reasoning int64
 		if err := rows.Scan(
-			&bucketTime,
+			&ts,
 			&model,
-			&requests,
 			&total,
 			&input,
 			&output,
@@ -503,12 +517,17 @@ order by bucket_time asc
 		); err != nil {
 			return TimeseriesResponse{}, fmt.Errorf("scan timeseries: %w", err)
 		}
+		eventTime, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return TimeseriesResponse{}, fmt.Errorf("parse timeseries timestamp %q: %w", ts, err)
+		}
+		bucketTime := bucketStart(eventTime, window.location, bucket).Format(time.RFC3339)
 		item := points[bucketTime]
 		if item == nil {
 			item = &TimeseriesPoint{Time: bucketTime}
 			points[bucketTime] = item
 		}
-		item.Requests += requests
+		item.Requests++
 		item.TotalTokens += total
 		item.InputTokens += input
 		item.OutputTokens += output
@@ -526,6 +545,21 @@ order by bucket_time asc
 		return strings.Compare(a.Time, b.Time)
 	})
 	return resp, nil
+}
+
+func bucketStart(ts time.Time, loc *time.Location, bucket string) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := ts.In(loc)
+	switch bucket {
+	case "hour":
+		return time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), 0, 0, 0, loc)
+	case "month":
+		return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, loc)
+	default:
+		return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	}
 }
 
 func queryModels(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (ModelsResponse, error) {

@@ -83,6 +83,66 @@ func TestTimeseriesEndpoint(t *testing.T) {
 	}
 }
 
+func TestRangeUsesRequestedTimezoneBoundaries(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	window, err := parseRange("day", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
+	if err != nil {
+		t.Fatalf("parseRange() error = %v", err)
+	}
+	if got, want := window.cutoff.Format(time.RFC3339), "2026-06-20T16:00:00Z"; got != want {
+		t.Fatalf("day cutoff = %s, want %s", got, want)
+	}
+	window, err = parseRange("week", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
+	if err != nil {
+		t.Fatalf("parseRange() error = %v", err)
+	}
+	if got, want := window.cutoff.Format(time.RFC3339), "2026-06-14T16:00:00Z"; got != want {
+		t.Fatalf("week cutoff = %s, want %s", got, want)
+	}
+}
+
+func TestSummaryAndTimeseriesUseRequestedTimezone(t *testing.T) {
+	handler := testHandlerWithEvents(t, nil, []event.Usage{
+		testUsage("resp_before_local_day", "", "gpt-4.1", "https-json", "2026-06-20T15:30:00Z", 10),
+		testUsage("resp_local_midnight", "", "gpt-4.1", "https-json", "2026-06-20T16:30:00Z", 20),
+		testUsage("resp_local_morning", "", "gpt-4.1", "https-json", "2026-06-21T01:00:00Z", 30),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/summary?range=day&tz=Asia%2FShanghai", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var summary SummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if summary.Requests != 2 || summary.TotalTokens != 50 {
+		t.Fatalf("summary = %+v", summary)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/timeseries?range=day&bucket=day&tz=Asia%2FShanghai", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeseries status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var timeseries TimeseriesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &timeseries); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(timeseries.Points) != 1 {
+		t.Fatalf("points = %+v", timeseries.Points)
+	}
+	if timeseries.Points[0].Time != "2026-06-21T00:00:00+08:00" || timeseries.Points[0].TotalTokens != 50 {
+		t.Fatalf("point = %+v", timeseries.Points[0])
+	}
+}
+
 func TestChainsAndEventsEndpoints(t *testing.T) {
 	handler := testHandler(t)
 
@@ -263,6 +323,16 @@ func testHandler(t *testing.T) http.Handler {
 
 func testHandlerWithPricing(t *testing.T, catalog *pricing.Catalog) http.Handler {
 	t.Helper()
+	events := []event.Usage{
+		testUsage("resp_root", "", "gpt-4.1", "https-json", "2026-06-20T09:00:00Z", 40),
+		testUsage("resp_child", "resp_root", "gpt-4.1", "websocket", "2026-06-21T11:00:00Z", 30),
+		testUsage("resp_other", "", "gpt-4o-mini", "https-json", "2026-06-21T08:30:00Z", 40),
+	}
+	return testHandlerWithEvents(t, catalog, events)
+}
+
+func testHandlerWithEvents(t *testing.T, catalog *pricing.Catalog, events []event.Usage) http.Handler {
+	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
 	jsonlPath := filepath.Join(dir, "usage.jsonl")
@@ -272,11 +342,6 @@ func testHandlerWithPricing(t *testing.T, catalog *pricing.Catalog) http.Handler
 	}
 	t.Cleanup(func() { _ = sink.Close() })
 
-	events := []event.Usage{
-		testUsage("resp_root", "", "gpt-4.1", "https-json", "2026-06-20T09:00:00Z", 40),
-		testUsage("resp_child", "resp_root", "gpt-4.1", "websocket", "2026-06-21T11:00:00Z", 30),
-		testUsage("resp_other", "", "gpt-4o-mini", "https-json", "2026-06-21T08:30:00Z", 40),
-	}
 	if _, err := sink.WriteBatch(context.Background(), events); err != nil {
 		t.Fatalf("WriteBatch() error = %v", err)
 	}

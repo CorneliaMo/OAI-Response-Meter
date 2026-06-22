@@ -123,6 +123,7 @@ export function App() {
   const [error, setError] = useState<string>("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const t = messages[locale];
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
   useEffect(() => {
     window.localStorage.setItem("oai-meter-locale", locale);
@@ -138,13 +139,14 @@ export function App() {
           setLoading(true);
         }
         const bucket = range === "day" ? "hour" : range === "year" ? "month" : "day";
+        const tzQuery = `tz=${encodeURIComponent(timeZone)}`;
         const chainQuery = selectedChain ? `&chain_root_response_id=${encodeURIComponent(selectedChain)}` : "";
         const [summary, timeseries, models, chains, events] = await Promise.all([
-          requestJSON<SummaryResponse>(`/api/summary?range=${range}`),
-          requestJSON<TimeseriesResponse>(`/api/timeseries?range=${range}&bucket=${bucket}`),
-          requestJSON<ModelsResponse>(`/api/models?range=${range}`),
-          requestJSON<ChainsResponse>(`/api/chains?range=${range}&limit=12`),
-          requestJSON<EventsResponse>(`/api/events?range=${range}&limit=25${chainQuery}`),
+          requestJSON<SummaryResponse>(`/api/summary?range=${range}&${tzQuery}`),
+          requestJSON<TimeseriesResponse>(`/api/timeseries?range=${range}&bucket=${bucket}&${tzQuery}`),
+          requestJSON<ModelsResponse>(`/api/models?range=${range}&${tzQuery}`),
+          requestJSON<ChainsResponse>(`/api/chains?range=${range}&limit=12&${tzQuery}`),
+          requestJSON<EventsResponse>(`/api/events?range=${range}&limit=25&${tzQuery}${chainQuery}`),
         ]);
         if (cancelled) {
           return;
@@ -170,7 +172,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [range, selectedChain, t.failedToLoad]);
+  }, [range, selectedChain, t.failedToLoad, timeZone]);
 
   const kpis = useMemo(() => {
     if (!data) {
@@ -300,7 +302,7 @@ export function App() {
                 grid: { top: 34, right: 18, bottom: 28, left: 42 },
                 xAxis: {
                   type: "category",
-                  data: data.timeseries.points.map((point) => point.time),
+                  data: data.timeseries.points.map((point) => formatBucketTime(point.time, data.timeseries.bucket, locale)),
                   axisLabel: { color: "#6a7885", hideOverlap: true },
                 },
                 yAxis: {
@@ -675,6 +677,31 @@ function formatTime(value: string, locale: Locale, t: (typeof messages)[Locale])
     return t.time.none;
   }
   return new Date(value).toLocaleString(locale);
+}
+
+function formatBucketTime(value: string, bucket: "hour" | "day" | "month", locale: Locale) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  if (bucket === "hour") {
+    return new Intl.DateTimeFormat(locale, {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+  if (bucket === "month") {
+    return new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "2-digit",
+    }).format(date);
+  }
+  return new Intl.DateTimeFormat(locale, {
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 function truncate(value: string) {
