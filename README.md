@@ -139,6 +139,7 @@ The meter records only usage metadata:
 - host and path
 - response id
 - previous response id and chain root response id
+- optional observed `prompt_cache_key`, when present on completed responses
 - model
 - input, output, total, cached, and reasoning token counts
 - observed Codex rate-limit metadata, when an internal `codex.rate_limits`
@@ -158,7 +159,12 @@ It does not persist Authorization headers, cookies, prompts, request bodies,
 response bodies, generated content, or full WebSocket messages.
 
 The dashboard API is read-only and exposes only the same stored metadata:
-timestamps, transport, host, path, response IDs, model, and token counts.
+timestamps, transport, host, path, response IDs, optional `prompt_cache_key`,
+model, and token counts.
+
+`prompt_cache_key` is observed metadata and is not treated as a required
+Responses API field. Missing values are stored as an empty string; with
+`--verbose`, the daemon logs a small warning for that event.
 
 `codex.rate_limits` is not a documented OpenAI API event. When it appears, the
 meter stores it best-effort in a separate table with the raw JSON and extracted

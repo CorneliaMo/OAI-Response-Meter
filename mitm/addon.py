@@ -200,6 +200,7 @@ def event_from_response(response: dict[str, Any], transport: str, host: str, pat
         "path": path,
         "response_id": response_id,
         "previous_response_id": response.get("previous_response_id") or "",
+        "prompt_cache_key": _string_or_empty(response.get("prompt_cache_key")),
         "model": response.get("model", ""),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -287,6 +288,12 @@ def _int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(number, 0)
+
+
+def _string_or_empty(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _env_int(name: str, default: int) -> int:

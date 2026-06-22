@@ -15,7 +15,7 @@ class AddonTest(unittest.TestCase):
             request=Obj(host="api.openai.com", path="/v1/responses"),
             response=Obj(
                 headers={"content-type": "application/json"},
-                text='{"id":"resp_1","previous_response_id":"resp_parent","model":"gpt-test","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}',
+                text='{"id":"resp_1","previous_response_id":"resp_parent","prompt_cache_key":"session-uuid","model":"gpt-test","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}',
             ),
         )
 
@@ -25,6 +25,7 @@ class AddonTest(unittest.TestCase):
         self.assertEqual(event["transport"], "https-json")
         self.assertEqual(event["response_id"], "resp_1")
         self.assertEqual(event["previous_response_id"], "resp_parent")
+        self.assertEqual(event["prompt_cache_key"], "session-uuid")
         self.assertEqual(event["total_tokens"], 3)
 
     def test_extract_sse_completed_usage(self):
@@ -71,6 +72,22 @@ class AddonTest(unittest.TestCase):
         self.assertIsNotNone(event)
         self.assertEqual(event["transport"], "websocket")
         self.assertEqual(event["response_id"], "resp_3")
+        self.assertEqual(event["prompt_cache_key"], "")
+
+    def test_extract_usage_with_invalid_prompt_cache_key(self):
+        flow = Obj(
+            request=Obj(host="api.openai.com", path="/v1/responses"),
+            response=Obj(
+                headers={"content-type": "application/json"},
+                text='{"id":"resp_bad_prompt_cache","prompt_cache_key":{"unexpected":true},"model":"gpt-test","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}',
+            ),
+        )
+
+        event = extract_http_usage(flow)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["response_id"], "resp_bad_prompt_cache")
+        self.assertEqual(event["prompt_cache_key"], "")
 
     def test_extract_websocket_codex_rate_limits(self):
         flow = Obj(

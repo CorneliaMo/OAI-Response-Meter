@@ -41,7 +41,8 @@ func TestWriteBatchStoresUsageAndJSONL(t *testing.T) {
 
 	var total int64
 	var root string
-	if err := db.QueryRowContext(ctx, `select total_tokens, chain_root_response_id from usage_events where response_id = ?`, "resp_1").Scan(&total, &root); err != nil {
+	var promptCacheKey string
+	if err := db.QueryRowContext(ctx, `select total_tokens, chain_root_response_id, prompt_cache_key from usage_events where response_id = ?`, "resp_1").Scan(&total, &root, &promptCacheKey); err != nil {
 		t.Fatalf("query usage error = %v", err)
 	}
 	if total != 30 {
@@ -49,6 +50,9 @@ func TestWriteBatchStoresUsageAndJSONL(t *testing.T) {
 	}
 	if root != "resp_1" {
 		t.Fatalf("chain_root_response_id = %q, want resp_1", root)
+	}
+	if promptCacheKey != "session-uuid" {
+		t.Fatalf("prompt_cache_key = %q, want session-uuid", promptCacheKey)
 	}
 
 	data, err := os.ReadFile(jsonlPath)
@@ -189,12 +193,12 @@ insert into usage_events (
 		t.Fatalf("sql.Open() error = %v", err)
 	}
 	defer db.Close()
-	var previous, root string
-	if err := db.QueryRowContext(ctx, `select previous_response_id, chain_root_response_id from usage_events where response_id = ?`, "resp_old").Scan(&previous, &root); err != nil {
+	var previous, root, promptCacheKey string
+	if err := db.QueryRowContext(ctx, `select previous_response_id, chain_root_response_id, prompt_cache_key from usage_events where response_id = ?`, "resp_old").Scan(&previous, &root, &promptCacheKey); err != nil {
 		t.Fatalf("query migrated row error = %v", err)
 	}
-	if previous != "" || root != "resp_old" {
-		t.Fatalf("previous/root = %q/%q, want empty/resp_old", previous, root)
+	if previous != "" || root != "resp_old" || promptCacheKey != "" {
+		t.Fatalf("previous/root/prompt_cache_key = %q/%q/%q, want empty/resp_old/empty", previous, root, promptCacheKey)
 	}
 }
 
@@ -269,6 +273,7 @@ func sampleUsage(responseID string) event.Usage {
 		Path:               "/backend-api/codex",
 		ResponseID:         responseID,
 		PreviousResponseID: "",
+		PromptCacheKey:     "session-uuid",
 		Model:              "gpt-test",
 		InputTokens:        10,
 		OutputTokens:       20,

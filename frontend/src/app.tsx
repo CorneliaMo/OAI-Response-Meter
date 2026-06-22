@@ -87,6 +87,7 @@ type EventItem = {
   response_id: string;
   previous_response_id: string;
   chain_root_response_id: string;
+  prompt_cache_key: string;
   model: string;
   input_tokens: number;
   output_tokens: number;

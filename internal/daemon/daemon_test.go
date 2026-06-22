@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +66,41 @@ func TestDaemonCountsInvalidDatagrams(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestDaemonWarnsWhenPromptCacheKeyMissing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var logs []string
+	sink := &memoryStore{}
+	socketPath := filepath.Join(t.TempDir(), "meter.sock")
+	daemon, err := New(Config{
+		SocketPath:    socketPath,
+		BatchSize:     1,
+		FlushInterval: 20 * time.Millisecond,
+		Verbose:       true,
+		Logf: func(format string, args ...any) {
+			logs = append(logs, format)
+		},
+	}, sink)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(ctx) }()
+	waitForSocket(t, socketPath)
+
+	sendDatagram(t, socketPath, sampleDatagram("resp_missing_prompt_cache_key"))
+	waitFor(t, func() bool { return sink.count() == 1 })
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !containsLog(logs, "missing optional prompt_cache_key") {
+		t.Fatalf("logs missing prompt_cache_key warning: %#v", logs)
 	}
 }
 
@@ -173,6 +209,15 @@ func sampleDatagram(responseID string) []byte {
 		"output_tokens": 20,
 		"total_tokens": 30
 	}`)
+}
+
+func containsLog(logs []string, needle string) bool {
+	for _, line := range logs {
+		if strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func sampleRateLimitDatagram() []byte {

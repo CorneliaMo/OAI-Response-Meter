@@ -74,9 +74,9 @@ func (s *Store) WriteBatch(ctx context.Context, events []event.Usage) (WriteResu
 
 	stmt, err := tx.PrepareContext(ctx, `
 insert or ignore into usage_events (
-  ts, source, transport, host, path, response_id, previous_response_id, chain_root_response_id, model,
+  ts, source, transport, host, path, response_id, previous_response_id, chain_root_response_id, prompt_cache_key, model,
   input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("prepare insert: %w", err)
@@ -95,6 +95,7 @@ insert or ignore into usage_events (
 			usage.ResponseID,
 			usage.PreviousResponseID,
 			usage.ChainRootResponseID,
+			usage.PromptCacheKey,
 			usage.Model,
 			usage.InputTokens,
 			usage.OutputTokens,
@@ -257,6 +258,7 @@ func (s *Store) init(ctx context.Context) error {
   response_id text not null unique,
   previous_response_id text not null default '',
   chain_root_response_id text not null default '',
+  prompt_cache_key text not null default '',
   model text,
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
@@ -269,9 +271,11 @@ func (s *Store) init(ctx context.Context) error {
 		`create index if not exists idx_usage_events_model_ts on usage_events(model, ts)`,
 		`alter table usage_events add column previous_response_id text not null default ''`,
 		`alter table usage_events add column chain_root_response_id text not null default ''`,
+		`alter table usage_events add column prompt_cache_key text not null default ''`,
 		`update usage_events set chain_root_response_id = response_id where chain_root_response_id = ''`,
 		`create index if not exists idx_usage_events_previous_response_id on usage_events(previous_response_id)`,
 		`create index if not exists idx_usage_events_chain_root_response_id on usage_events(chain_root_response_id)`,
+		`create index if not exists idx_usage_events_prompt_cache_key on usage_events(prompt_cache_key)`,
 		`create table if not exists codex_rate_limit_events (
   id integer primary key autoincrement,
   ts text not null,

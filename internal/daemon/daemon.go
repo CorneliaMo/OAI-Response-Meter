@@ -175,9 +175,13 @@ func (d *Daemon) logDatagram(item event.Datagram) {
 	switch item.Kind {
 	case event.KindUsage:
 		usage := item.Usage
-		d.logf("received response_id=%s previous_response_id=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
+		if usage.PromptCacheKey == "" {
+			d.logf("warning response_id=%s missing optional prompt_cache_key", usage.ResponseID)
+		}
+		d.logf("received response_id=%s previous_response_id=%s prompt_cache_key=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
 			usage.ResponseID,
 			usage.PreviousResponseID,
+			usage.PromptCacheKey,
 			usage.Transport,
 			usage.Host,
 			usage.Path,

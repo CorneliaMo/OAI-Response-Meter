@@ -34,6 +34,7 @@ type Usage struct {
 	ResponseID          string `json:"response_id"`
 	PreviousResponseID  string `json:"previous_response_id"`
 	ChainRootResponseID string `json:"chain_root_response_id"`
+	PromptCacheKey      string `json:"prompt_cache_key"`
 	Model               string `json:"model"`
 	InputTokens         int64  `json:"input_tokens"`
 	OutputTokens        int64  `json:"output_tokens"`
