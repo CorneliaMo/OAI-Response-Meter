@@ -51,6 +51,8 @@ func TestEmptyDatabaseReturnsZeroSummaryAndEmptyCollections(t *testing.T) {
 		"/api/models?range=day",
 		"/api/chains?range=day",
 		"/api/events?range=day",
+		"/api/heatmap?range=day",
+		"/api/rate-limits?range=day",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -88,14 +90,14 @@ func TestRangeUsesRequestedTimezoneBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocation() error = %v", err)
 	}
-	window, err := parseRange("day", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
+	window, err := parseRange("day", "", "", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
 	if err != nil {
 		t.Fatalf("parseRange() error = %v", err)
 	}
 	if got, want := window.cutoff.Format(time.RFC3339), "2026-06-20T16:00:00Z"; got != want {
 		t.Fatalf("day cutoff = %s, want %s", got, want)
 	}
-	window, err = parseRange("week", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
+	window, err = parseRange("week", "", "", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
 	if err != nil {
 		t.Fatalf("parseRange() error = %v", err)
 	}
@@ -104,12 +106,48 @@ func TestRangeUsesRequestedTimezoneBoundaries(t *testing.T) {
 	}
 }
 
+func TestRangeSupportsCustomDateBounds(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	window, err := parseRange("week", "2026-06-19", "2026-06-20", time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC), loc)
+	if err != nil {
+		t.Fatalf("parseRange() error = %v", err)
+	}
+	if window.name != "custom" {
+		t.Fatalf("range name = %q", window.name)
+	}
+	if got, want := window.cutoff.Format(time.RFC3339), "2026-06-18T16:00:00Z"; got != want {
+		t.Fatalf("cutoff = %s, want %s", got, want)
+	}
+	if window.end == nil {
+		t.Fatal("expected end bound")
+	}
+	if got, want := window.end.Format(time.RFC3339), "2026-06-20T16:00:00Z"; got != want {
+		t.Fatalf("end = %s, want %s", got, want)
+	}
+}
+
+func TestRangeRejectsInvalidCustomDateBounds(t *testing.T) {
+	loc := time.UTC
+	if _, err := parseRange("day", "2026-06-01", "", time.Now().UTC(), loc); err == nil {
+		t.Fatal("expected error for missing to")
+	}
+	if _, err := parseRange("day", "2026-06-02", "2026-06-01", time.Now().UTC(), loc); err == nil {
+		t.Fatal("expected error for reversed bounds")
+	}
+	if _, err := parseRange("day", "20260602", "2026-06-03", time.Now().UTC(), loc); err == nil {
+		t.Fatal("expected error for invalid date format")
+	}
+}
+
 func TestSummaryAndTimeseriesUseRequestedTimezone(t *testing.T) {
-	handler := testHandlerWithEvents(t, nil, []event.Usage{
+	handler := testHandlerWithAllEvents(t, nil, []event.Usage{
 		testUsage("resp_before_local_day", "", "gpt-4.1", "https-json", "2026-06-20T15:30:00Z", 10),
 		testUsage("resp_local_midnight", "", "gpt-4.1", "https-json", "2026-06-20T16:30:00Z", 20),
 		testUsage("resp_local_morning", "", "gpt-4.1", "https-json", "2026-06-21T01:00:00Z", 30),
-	})
+	}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/summary?range=day&tz=Asia%2FShanghai", nil)
 	rec := httptest.NewRecorder()
@@ -140,6 +178,34 @@ func TestSummaryAndTimeseriesUseRequestedTimezone(t *testing.T) {
 	}
 	if timeseries.Points[0].Time != "2026-06-21T00:00:00+08:00" || timeseries.Points[0].TotalTokens != 50 {
 		t.Fatalf("point = %+v", timeseries.Points[0])
+	}
+}
+
+func TestCustomDateWindowAppliesAcrossEndpoints(t *testing.T) {
+	handler := testHandler(t)
+
+	for _, path := range []string{
+		"/api/summary?range=week&from=2026-06-21&to=2026-06-21",
+		"/api/timeseries?range=week&bucket=day&from=2026-06-21&to=2026-06-21",
+		"/api/models?range=week&from=2026-06-21&to=2026-06-21",
+		"/api/chains?range=week&from=2026-06-21&to=2026-06-21",
+		"/api/events?range=week&from=2026-06-21&to=2026-06-21",
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	summaryRec := httptest.NewRecorder()
+	handler.ServeHTTP(summaryRec, httptest.NewRequest(http.MethodGet, "/api/summary?range=week&from=2026-06-21&to=2026-06-21", nil))
+	var summary SummaryResponse
+	if err := json.Unmarshal(summaryRec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if summary.Requests != 2 || summary.TotalTokens != 70 {
+		t.Fatalf("summary = %+v", summary)
 	}
 }
 
@@ -178,6 +244,120 @@ func TestChainsAndEventsEndpoints(t *testing.T) {
 	}
 	if events.Items[0].ResponseID != "resp_child" {
 		t.Fatalf("first event = %+v", events.Items[0])
+	}
+}
+
+func TestEventsFiltersAndSort(t *testing.T) {
+	usages := []event.Usage{
+		testUsage("resp_root", "", "gpt-4.1", "https-json", "2026-06-20T09:00:00Z", 40),
+		testUsage("resp_child", "resp_root", "gpt-4.1", "websocket", "2026-06-21T11:00:00Z", 30),
+		testUsage("resp_other", "", "gpt-4o-mini", "https-json", "2026-06-21T08:30:00Z", 50),
+	}
+	usages[0].PromptCacheKey = "alpha"
+	usages[1].PromptCacheKey = "beta"
+	usages[2].PromptCacheKey = "alpha"
+	handler := testHandlerWithAllEvents(t, nil, usages, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events?range=week&model=gpt-4.1&transport=websocket&prompt_cache_key=beta&sort=total_desc", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var events EventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(events.Items) != 1 || events.Items[0].ResponseID != "resp_child" {
+		t.Fatalf("events = %+v", events.Items)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/events?range=week&sort=total_desc", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(events.Items) < 2 || events.Items[0].TotalTokens < events.Items[1].TotalTokens {
+		t.Fatalf("unexpected sort order: %+v", events.Items)
+	}
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/events?range=week&sort=weird", nil)
+	badRec := httptest.NewRecorder()
+	handler.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad status = %d body=%s", badRec.Code, badRec.Body.String())
+	}
+}
+
+func TestHeatmapEndpointReturns365DaysAndHighlightsRange(t *testing.T) {
+	handler := testHandlerWithAllEvents(t, nil, []event.Usage{
+		testUsage("resp_old", "", "gpt-4.1", "https-json", "2025-07-03T10:00:00Z", 10),
+		testUsage("resp_today", "", "gpt-4.1", "https-json", "2026-06-21T09:00:00Z", 20),
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/heatmap?range=week", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp HeatmapResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(resp.Days) != 365 {
+		t.Fatalf("days len = %d", len(resp.Days))
+	}
+	if resp.Days[0].Date != "2025-06-22" || resp.Days[len(resp.Days)-1].Date != "2026-06-21" {
+		t.Fatalf("unexpected date range: first=%s last=%s", resp.Days[0].Date, resp.Days[len(resp.Days)-1].Date)
+	}
+	var highlighted int
+	var today HeatmapDay
+	for _, day := range resp.Days {
+		if day.InRange {
+			highlighted++
+		}
+		if day.Date == "2026-06-21" {
+			today = day
+		}
+	}
+	if highlighted != 7 {
+		t.Fatalf("highlighted days = %d", highlighted)
+	}
+	if today.Requests != 1 || today.TotalTokens != 20 || !today.InRange {
+		t.Fatalf("today = %+v", today)
+	}
+}
+
+func TestRateLimitsEndpoint(t *testing.T) {
+	rateLimits := []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 40, 60, 1_781_881_906, 20, 1440, 1_782_380_758),
+		testRateLimit("2026-06-21T11:00:00Z", "plus", false, true, 90, 60, 1_782_039_906, 45, 1440, 1_782_391_558),
+	}
+	handler := testHandlerWithAllEvents(t, nil, nil, rateLimits)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limits?range=day&limit=1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp RateLimitsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if resp.Bucket != "hour" || resp.Limit != 1 || len(resp.Items) != 1 || len(resp.Points) != 2 {
+		t.Fatalf("response = %+v", resp)
+	}
+	if !resp.Items[0].LimitReached || resp.Items[0].PrimaryResetAt != "2026-06-21T11:05:06Z" {
+		t.Fatalf("first item = %+v", resp.Items[0])
+	}
+	if resp.Points[1].PrimaryUsedPercent != 90 || resp.Points[1].SecondaryUsedPercent != 45 {
+		t.Fatalf("points = %+v", resp.Points)
 	}
 }
 
@@ -323,15 +503,15 @@ func testHandler(t *testing.T) http.Handler {
 
 func testHandlerWithPricing(t *testing.T, catalog *pricing.Catalog) http.Handler {
 	t.Helper()
-	events := []event.Usage{
+	usages := []event.Usage{
 		testUsage("resp_root", "", "gpt-4.1", "https-json", "2026-06-20T09:00:00Z", 40),
 		testUsage("resp_child", "resp_root", "gpt-4.1", "websocket", "2026-06-21T11:00:00Z", 30),
 		testUsage("resp_other", "", "gpt-4o-mini", "https-json", "2026-06-21T08:30:00Z", 40),
 	}
-	return testHandlerWithEvents(t, catalog, events)
+	return testHandlerWithAllEvents(t, catalog, usages, nil)
 }
 
-func testHandlerWithEvents(t *testing.T, catalog *pricing.Catalog, events []event.Usage) http.Handler {
+func testHandlerWithAllEvents(t *testing.T, catalog *pricing.Catalog, usages []event.Usage, rateLimits []event.RateLimits) http.Handler {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
@@ -342,8 +522,11 @@ func testHandlerWithEvents(t *testing.T, catalog *pricing.Catalog, events []even
 	}
 	t.Cleanup(func() { _ = sink.Close() })
 
-	if _, err := sink.WriteBatch(context.Background(), events); err != nil {
+	if _, err := sink.WriteBatch(context.Background(), usages); err != nil {
 		t.Fatalf("WriteBatch() error = %v", err)
+	}
+	if _, err := sink.WriteRateLimitBatch(context.Background(), rateLimits); err != nil {
+		t.Fatalf("WriteRateLimitBatch() error = %v", err)
 	}
 
 	handler, db, err := newHandler(Config{DBPath: dbPath, Pricing: catalog}, func() time.Time {
@@ -393,5 +576,29 @@ func testUsage(responseID, previousResponseID, model, transport, ts string, tota
 		TotalTokens:        total,
 		CachedTokens:       total / 10,
 		ReasoningTokens:    total / 5,
+	}
+}
+
+func testRateLimit(ts, plan string, allowed, reached bool, primaryUsed, primaryWindow, primaryResetAt, secondaryUsed, secondaryWindow, secondaryResetAt int64) event.RateLimits {
+	return event.RateLimits{
+		Schema:                     event.SchemaVersion,
+		EventType:                  event.RateLimitsEventType,
+		Timestamp:                  ts,
+		Source:                     "codex",
+		Transport:                  "https-json",
+		Host:                       "api.openai.com",
+		Path:                       "/v1/responses",
+		PlanType:                   plan,
+		Allowed:                    allowed,
+		LimitReached:               reached,
+		PrimaryUsedPercent:         primaryUsed,
+		PrimaryWindowMinutes:       primaryWindow,
+		PrimaryResetAfterSeconds:   30,
+		PrimaryResetAt:             primaryResetAt,
+		SecondaryUsedPercent:       secondaryUsed,
+		SecondaryWindowMinutes:     secondaryWindow,
+		SecondaryResetAfterSeconds: 60,
+		SecondaryResetAt:           secondaryResetAt,
+		RawJSON:                    `{"type":"codex.rate_limits"}`,
 	}
 }

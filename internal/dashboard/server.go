@@ -125,8 +125,68 @@ type EventItem struct {
 	Cost                pricing.Cost `json:"cost"`
 }
 
+type HeatmapResponse struct {
+	Range string       `json:"range"`
+	Days  []HeatmapDay `json:"days"`
+}
+
+type HeatmapDay struct {
+	Date            string       `json:"date"`
+	Requests        int64        `json:"requests"`
+	TotalTokens     int64        `json:"total_tokens"`
+	InputTokens     int64        `json:"input_tokens"`
+	OutputTokens    int64        `json:"output_tokens"`
+	CachedTokens    int64        `json:"cached_tokens"`
+	ReasoningTokens int64        `json:"reasoning_tokens"`
+	Cost            pricing.Cost `json:"cost"`
+	InRange         bool         `json:"in_range"`
+}
+
+type RateLimitsResponse struct {
+	Range  string           `json:"range"`
+	Bucket string           `json:"bucket"`
+	Items  []RateLimitItem  `json:"items"`
+	Points []RateLimitPoint `json:"points"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+}
+
+type RateLimitItem struct {
+	Timestamp                  string `json:"ts"`
+	Transport                  string `json:"transport"`
+	Host                       string `json:"host"`
+	Path                       string `json:"path"`
+	PlanType                   string `json:"plan_type"`
+	Allowed                    bool   `json:"allowed"`
+	LimitReached               bool   `json:"limit_reached"`
+	PrimaryUsedPercent         int64  `json:"primary_used_percent"`
+	PrimaryWindowMinutes       int64  `json:"primary_window_minutes"`
+	PrimaryResetAfterSeconds   int64  `json:"primary_reset_after_seconds"`
+	PrimaryResetAt             string `json:"primary_reset_at"`
+	SecondaryUsedPercent       int64  `json:"secondary_used_percent"`
+	SecondaryWindowMinutes     int64  `json:"secondary_window_minutes"`
+	SecondaryResetAfterSeconds int64  `json:"secondary_reset_after_seconds"`
+	SecondaryResetAt           string `json:"secondary_reset_at"`
+	RawJSON                    string `json:"raw_json"`
+}
+
+type RateLimitPoint struct {
+	Time                 string `json:"time"`
+	PrimaryUsedPercent   int64  `json:"primary_used_percent"`
+	SecondaryUsedPercent int64  `json:"secondary_used_percent"`
+	Events               int64  `json:"events"`
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+type EventFilters struct {
+	ChainRootResponseID string
+	Model               string
+	Transport           string
+	PromptCacheKey      string
+	Sort                string
 }
 
 func Start(ctx context.Context, config Config) (*Server, error) {
@@ -219,6 +279,8 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 	mux.HandleFunc("/api/models", server.handleModels)
 	mux.HandleFunc("/api/chains", server.handleChains)
 	mux.HandleFunc("/api/events", server.handleEvents)
+	mux.HandleFunc("/api/heatmap", server.handleHeatmap)
+	mux.HandleFunc("/api/rate-limits", server.handleRateLimits)
 	mux.HandleFunc("/api/", server.handleAPINotFound)
 	mux.HandleFunc("/", server.handleStatic)
 	return mux, db, nil
@@ -232,7 +294,7 @@ type apiServer struct {
 }
 
 func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
+	window, err := parseQueryWindow(r, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -246,7 +308,7 @@ func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleTimeseries(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
+	window, err := parseQueryWindow(r, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -265,7 +327,7 @@ func (s apiServer) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleModels(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
+	window, err := parseQueryWindow(r, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -279,7 +341,7 @@ func (s apiServer) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleChains(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
+	window, err := parseQueryWindow(r, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -298,7 +360,7 @@ func (s apiServer) handleChains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s apiServer) handleEvents(w http.ResponseWriter, r *http.Request) {
-	window, err := parseRange(r.URL.Query().Get("range"), s.now().UTC(), requestLocation(r))
+	window, err := parseQueryWindow(r, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -313,7 +375,50 @@ func (s apiServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryEvents(r.Context(), s.db, window, limit, offset, r.URL.Query().Get("chain_root_response_id"), s.pricing)
+	filters, err := parseEventFilters(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := queryEvents(r.Context(), s.db, window, limit, offset, filters, s.pricing)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s apiServer) handleHeatmap(w http.ResponseWriter, r *http.Request) {
+	window, err := parseQueryWindow(r, s.now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := queryHeatmap(r.Context(), s.db, window, s.now().UTC(), s.pricing)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s apiServer) handleRateLimits(w http.ResponseWriter, r *http.Request) {
+	window, err := parseQueryWindow(r, s.now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	limit, err := parseLimit(r.URL.Query().Get("limit"), 100)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	offset, err := parseOffset(r.URL.Query().Get("offset"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -352,9 +457,14 @@ func (s apiServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 type queryWindow struct {
-	name     string
-	cutoff   time.Time
-	location *time.Location
+	name      string
+	cutoff    time.Time
+	end       *time.Time
+	location  *time.Location
+	startDay  time.Time
+	endDay    time.Time
+	fromLabel string
+	toLabel   string
 }
 
 func requestLocation(r *http.Request) *time.Location {
@@ -369,28 +479,90 @@ func requestLocation(r *http.Request) *time.Location {
 	return loc
 }
 
-func parseRange(value string, now time.Time, loc *time.Location) (queryWindow, error) {
+func parseQueryWindow(r *http.Request, now time.Time) (queryWindow, error) {
+	query := r.URL.Query()
+	return parseRange(query.Get("range"), query.Get("from"), query.Get("to"), now, requestLocation(r))
+}
+
+func parseRange(value, fromValue, toValue string, now time.Time, loc *time.Location) (queryWindow, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
 	localNow := now.In(loc)
-	localStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	localToday := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+
+	fromValue = strings.TrimSpace(fromValue)
+	toValue = strings.TrimSpace(toValue)
+	if (fromValue == "") != (toValue == "") {
+		return queryWindow{}, errors.New("from and to must be supplied together")
+	}
+	if fromValue != "" {
+		fromDay, err := parseLocalDate(fromValue, loc)
+		if err != nil {
+			return queryWindow{}, fmt.Errorf("invalid from %q", fromValue)
+		}
+		toDay, err := parseLocalDate(toValue, loc)
+		if err != nil {
+			return queryWindow{}, fmt.Errorf("invalid to %q", toValue)
+		}
+		if fromDay.After(toDay) {
+			return queryWindow{}, errors.New("from must be on or before to")
+		}
+		endDay := toDay.AddDate(0, 0, 1)
+		endUTC := endDay.UTC()
+		return queryWindow{
+			name:      "custom",
+			cutoff:    fromDay.UTC(),
+			end:       &endUTC,
+			location:  loc,
+			startDay:  fromDay,
+			endDay:    endDay,
+			fromLabel: fromValue,
+			toLabel:   toValue,
+		}, nil
+	}
+
+	window := queryWindow{
+		name:     defaultRangeName(value),
+		location: loc,
+		endDay:   localToday.AddDate(0, 0, 1),
+	}
 	switch value {
 	case "", "day":
-		return queryWindow{name: "day", cutoff: localStart.UTC(), location: loc}, nil
+		window.cutoff = localToday.UTC()
+		window.startDay = localToday
 	case "week":
-		weekday := int(localStart.Weekday())
+		weekday := int(localToday.Weekday())
 		if weekday == 0 {
 			weekday = 7
 		}
-		return queryWindow{name: "week", cutoff: localStart.AddDate(0, 0, 1-weekday).UTC(), location: loc}, nil
+		window.startDay = localToday.AddDate(0, 0, 1-weekday)
+		window.cutoff = window.startDay.UTC()
 	case "month":
-		return queryWindow{name: "month", cutoff: time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc).UTC(), location: loc}, nil
+		window.startDay = time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
+		window.cutoff = window.startDay.UTC()
 	case "year":
-		return queryWindow{name: "year", cutoff: time.Date(localNow.Year(), 1, 1, 0, 0, 0, 0, loc).UTC(), location: loc}, nil
+		window.startDay = time.Date(localNow.Year(), 1, 1, 0, 0, 0, 0, loc)
+		window.cutoff = window.startDay.UTC()
 	default:
 		return queryWindow{}, fmt.Errorf("invalid range %q", value)
 	}
+	return window, nil
+}
+
+func defaultRangeName(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "day"
+	}
+	return value
+}
+
+func parseLocalDate(value string, loc *time.Location) (time.Time, error) {
+	day, err := time.ParseInLocation("2006-01-02", value, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc), nil
 }
 
 func parseBucket(value string) (string, error) {
@@ -431,9 +603,25 @@ func parseOffset(value string) (int, error) {
 	return offset, nil
 }
 
+func parseEventFilters(r *http.Request) (EventFilters, error) {
+	sortValue := strings.TrimSpace(r.URL.Query().Get("sort"))
+	if sortValue == "" {
+		sortValue = "ts_desc"
+	}
+	if _, ok := eventSortSQL(sortValue); !ok {
+		return EventFilters{}, fmt.Errorf("invalid sort %q", sortValue)
+	}
+	return EventFilters{
+		ChainRootResponseID: strings.TrimSpace(r.URL.Query().Get("chain_root_response_id")),
+		Model:               strings.TrimSpace(r.URL.Query().Get("model")),
+		Transport:           strings.TrimSpace(r.URL.Query().Get("transport")),
+		PromptCacheKey:      strings.TrimSpace(r.URL.Query().Get("prompt_cache_key")),
+		Sort:                sortValue,
+	}, nil
+}
+
 func querySummary(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (SummaryResponse, error) {
-	resp := SummaryResponse{Range: window.name}
-	rows, err := db.QueryContext(ctx, `
+	query := `
 select
   coalesce(nullif(model, ''), '(unknown)'),
   count(*),
@@ -445,8 +633,14 @@ select
   coalesce(max(ts), '')
 from usage_events
 where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&query, &args, window)
+	query += `
 group by coalesce(nullif(model, ''), '(unknown)')
-`, window.cutoff.Format(time.RFC3339))
+`
+	resp := SummaryResponse{Range: window.name}
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return SummaryResponse{}, fmt.Errorf("query summary: %w", err)
 	}
@@ -483,7 +677,7 @@ group by coalesce(nullif(model, ''), '(unknown)')
 }
 
 func queryTimeseries(ctx context.Context, db *sql.DB, window queryWindow, bucket string, catalog *pricing.Catalog) (TimeseriesResponse, error) {
-	rows, err := db.QueryContext(ctx, `
+	query := `
 select
   ts,
   coalesce(nullif(model, ''), '(unknown)'),
@@ -494,8 +688,13 @@ select
   reasoning_tokens
 from usage_events
 where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&query, &args, window)
+	query += `
 order by ts asc
-`, window.cutoff.Format(time.RFC3339))
+`
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return TimeseriesResponse{}, fmt.Errorf("query timeseries: %w", err)
 	}
@@ -507,15 +706,7 @@ order by ts asc
 		var ts string
 		var model string
 		var total, input, output, cached, reasoning int64
-		if err := rows.Scan(
-			&ts,
-			&model,
-			&total,
-			&input,
-			&output,
-			&cached,
-			&reasoning,
-		); err != nil {
+		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &reasoning); err != nil {
 			return TimeseriesResponse{}, fmt.Errorf("scan timeseries: %w", err)
 		}
 		eventTime, err := time.Parse(time.RFC3339Nano, ts)
@@ -564,7 +755,7 @@ func bucketStart(ts time.Time, loc *time.Location, bucket string) time.Time {
 }
 
 func queryModels(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (ModelsResponse, error) {
-	rows, err := db.QueryContext(ctx, `
+	query := `
 select
   coalesce(nullif(model, ''), '(unknown)'),
   count(*),
@@ -575,9 +766,14 @@ select
   coalesce(sum(reasoning_tokens), 0)
 from usage_events
 where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&query, &args, window)
+	query += `
 group by coalesce(nullif(model, ''), '(unknown)')
 order by total_tokens desc, count(*) desc, 1 asc
-`, window.cutoff.Format(time.RFC3339))
+`
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ModelsResponse{}, fmt.Errorf("query models: %w", err)
 	}
@@ -607,7 +803,7 @@ order by total_tokens desc, count(*) desc, 1 asc
 }
 
 func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int, catalog *pricing.Catalog) (ChainsResponse, error) {
-	rows, err := db.QueryContext(ctx, `
+	query := `
 select
   chain_root_response_id,
   coalesce(nullif(model, ''), '(unknown)'),
@@ -622,9 +818,14 @@ select
   coalesce(sum(reasoning_tokens), 0)
 from usage_events
 where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&query, &args, window)
+	query += `
 group by chain_root_response_id, coalesce(nullif(model, ''), '(unknown)')
 order by max(ts) desc
-`, window.cutoff.Format(time.RFC3339))
+`
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ChainsResponse{}, fmt.Errorf("query chains: %w", err)
 	}
@@ -711,7 +912,7 @@ order by max(ts) desc
 	return resp, nil
 }
 
-func queryEvents(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, chainRootResponseID string, catalog *pricing.Catalog) (EventsResponse, error) {
+func queryEvents(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, filters EventFilters, catalog *pricing.Catalog) (EventsResponse, error) {
 	query := `
 select
   ts,
@@ -732,11 +933,25 @@ from usage_events
 where ts >= ?
 `
 	args := []any{window.cutoff.Format(time.RFC3339)}
-	if chainRootResponseID != "" {
+	appendUpperBound(&query, &args, window)
+	if filters.ChainRootResponseID != "" {
 		query += " and chain_root_response_id = ?"
-		args = append(args, chainRootResponseID)
+		args = append(args, filters.ChainRootResponseID)
 	}
-	query += " order by ts desc, id desc limit ? offset ?"
+	if filters.Model != "" {
+		query += " and coalesce(nullif(model, ''), '(unknown)') = ?"
+		args = append(args, filters.Model)
+	}
+	if filters.Transport != "" {
+		query += " and transport = ?"
+		args = append(args, filters.Transport)
+	}
+	if filters.PromptCacheKey != "" {
+		query += " and prompt_cache_key = ?"
+		args = append(args, filters.PromptCacheKey)
+	}
+	orderBy, _ := eventSortSQL(filters.Sort)
+	query += " order by " + orderBy + " limit ? offset ?"
 	args = append(args, limit, offset)
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -773,6 +988,248 @@ where ts >= ?
 		return EventsResponse{}, fmt.Errorf("iterate events: %w", err)
 	}
 	return resp, nil
+}
+
+func queryHeatmap(ctx context.Context, db *sql.DB, window queryWindow, now time.Time, catalog *pricing.Catalog) (HeatmapResponse, error) {
+	localNow := now.In(window.location)
+	localToday := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, window.location)
+	heatmapStart := localToday.AddDate(0, 0, -364)
+	heatmapEnd := localToday.AddDate(0, 0, 1)
+	query := `
+select
+  ts,
+  coalesce(nullif(model, ''), '(unknown)'),
+  total_tokens,
+  input_tokens,
+  output_tokens,
+  cached_tokens,
+  reasoning_tokens
+from usage_events
+where ts >= ? and ts < ?
+order by ts asc
+`
+	rows, err := db.QueryContext(ctx, query, heatmapStart.UTC().Format(time.RFC3339), heatmapEnd.UTC().Format(time.RFC3339))
+	if err != nil {
+		return HeatmapResponse{}, fmt.Errorf("query heatmap: %w", err)
+	}
+	defer rows.Close()
+
+	byDate := make(map[string]*HeatmapDay, 365)
+	for rows.Next() {
+		var ts string
+		var model string
+		var total, input, output, cached, reasoning int64
+		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &reasoning); err != nil {
+			return HeatmapResponse{}, fmt.Errorf("scan heatmap: %w", err)
+		}
+		eventTime, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return HeatmapResponse{}, fmt.Errorf("parse heatmap timestamp %q: %w", ts, err)
+		}
+		localDay := time.Date(eventTime.In(window.location).Year(), eventTime.In(window.location).Month(), eventTime.In(window.location).Day(), 0, 0, 0, 0, window.location)
+		key := localDay.Format("2006-01-02")
+		day := byDate[key]
+		if day == nil {
+			day = &HeatmapDay{Date: key}
+			byDate[key] = day
+		}
+		day.Requests++
+		day.TotalTokens += total
+		day.InputTokens += input
+		day.OutputTokens += output
+		day.CachedTokens += cached
+		day.ReasoningTokens += reasoning
+		day.Cost = pricing.Add(day.Cost, estimateCost(catalog, model, input, output, cached, total))
+	}
+	if err := rows.Err(); err != nil {
+		return HeatmapResponse{}, fmt.Errorf("iterate heatmap: %w", err)
+	}
+
+	resp := HeatmapResponse{Range: window.name}
+	for day := heatmapStart; !day.After(localToday); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		item := byDate[key]
+		if item == nil {
+			item = &HeatmapDay{Date: key}
+		}
+		item.InRange = !day.Before(window.startDay) && day.Before(window.endDay)
+		resp.Days = append(resp.Days, *item)
+	}
+	return resp, nil
+}
+
+func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int) (RateLimitsResponse, error) {
+	bucket := rateLimitBucket(window.name)
+	pointsQuery := `
+select
+  ts,
+  primary_used_percent,
+  secondary_used_percent
+from codex_rate_limit_events
+where ts >= ?
+`
+	pointsArgs := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&pointsQuery, &pointsArgs, window)
+	pointsQuery += `
+order by ts asc
+`
+	pointRows, err := db.QueryContext(ctx, pointsQuery, pointsArgs...)
+	if err != nil {
+		return RateLimitsResponse{}, fmt.Errorf("query rate limit points: %w", err)
+	}
+	defer pointRows.Close()
+
+	pointsMap := map[string]*RateLimitPoint{}
+	resp := RateLimitsResponse{Range: window.name, Bucket: bucket, Limit: limit, Offset: offset}
+	for pointRows.Next() {
+		var ts string
+		var primaryUsed, secondaryUsed int64
+		if err := pointRows.Scan(&ts, &primaryUsed, &secondaryUsed); err != nil {
+			return RateLimitsResponse{}, fmt.Errorf("scan rate limit point: %w", err)
+		}
+		eventTime, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return RateLimitsResponse{}, fmt.Errorf("parse rate limit point timestamp %q: %w", ts, err)
+		}
+		key := bucketStart(eventTime, window.location, bucket).Format(time.RFC3339)
+		point := pointsMap[key]
+		if point == nil {
+			point = &RateLimitPoint{Time: key}
+			pointsMap[key] = point
+		}
+		if primaryUsed > point.PrimaryUsedPercent {
+			point.PrimaryUsedPercent = primaryUsed
+		}
+		if secondaryUsed > point.SecondaryUsedPercent {
+			point.SecondaryUsedPercent = secondaryUsed
+		}
+		point.Events++
+	}
+	if err := pointRows.Err(); err != nil {
+		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit points: %w", err)
+	}
+	for _, point := range pointsMap {
+		resp.Points = append(resp.Points, *point)
+	}
+	slices.SortFunc(resp.Points, func(a, b RateLimitPoint) int {
+		return strings.Compare(a.Time, b.Time)
+	})
+
+	itemsQuery := `
+select
+  ts,
+  transport,
+  host,
+  path,
+  plan_type,
+  allowed,
+  limit_reached,
+  primary_used_percent,
+  primary_window_minutes,
+  primary_reset_after_seconds,
+  primary_reset_at,
+  secondary_used_percent,
+  secondary_window_minutes,
+  secondary_reset_after_seconds,
+  secondary_reset_at,
+  raw_json
+from codex_rate_limit_events
+where ts >= ?
+`
+	itemArgs := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&itemsQuery, &itemArgs, window)
+	itemsQuery += `
+order by ts desc, id desc
+limit ? offset ?
+`
+	itemArgs = append(itemArgs, limit, offset)
+	itemRows, err := db.QueryContext(ctx, itemsQuery, itemArgs...)
+	if err != nil {
+		return RateLimitsResponse{}, fmt.Errorf("query rate limit items: %w", err)
+	}
+	defer itemRows.Close()
+
+	for itemRows.Next() {
+		var item RateLimitItem
+		var allowedInt, limitReachedInt int64
+		var primaryResetAt, secondaryResetAt int64
+		if err := itemRows.Scan(
+			&item.Timestamp,
+			&item.Transport,
+			&item.Host,
+			&item.Path,
+			&item.PlanType,
+			&allowedInt,
+			&limitReachedInt,
+			&item.PrimaryUsedPercent,
+			&item.PrimaryWindowMinutes,
+			&item.PrimaryResetAfterSeconds,
+			&primaryResetAt,
+			&item.SecondaryUsedPercent,
+			&item.SecondaryWindowMinutes,
+			&item.SecondaryResetAfterSeconds,
+			&secondaryResetAt,
+			&item.RawJSON,
+		); err != nil {
+			return RateLimitsResponse{}, fmt.Errorf("scan rate limit item: %w", err)
+		}
+		item.Allowed = allowedInt != 0
+		item.LimitReached = limitReachedInt != 0
+		item.PrimaryResetAt = unixTimeString(primaryResetAt)
+		item.SecondaryResetAt = unixTimeString(secondaryResetAt)
+		resp.Items = append(resp.Items, item)
+	}
+	if err := itemRows.Err(); err != nil {
+		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit items: %w", err)
+	}
+	return resp, nil
+}
+
+func rateLimitBucket(rangeName string) string {
+	switch rangeName {
+	case "day":
+		return "hour"
+	case "year":
+		return "month"
+	default:
+		return "day"
+	}
+}
+
+func unixTimeString(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return time.Unix(value, 0).UTC().Format(time.RFC3339)
+}
+
+func eventSortSQL(value string) (string, bool) {
+	switch value {
+	case "", "ts_desc":
+		return "ts desc, id desc", true
+	case "ts_asc":
+		return "ts asc, id asc", true
+	case "total_desc":
+		return "total_tokens desc, ts desc, id desc", true
+	case "input_desc":
+		return "input_tokens desc, ts desc, id desc", true
+	case "output_desc":
+		return "output_tokens desc, ts desc, id desc", true
+	case "cached_desc":
+		return "cached_tokens desc, ts desc, id desc", true
+	case "reasoning_desc":
+		return "reasoning_tokens desc, ts desc, id desc", true
+	default:
+		return "", false
+	}
+}
+
+func appendUpperBound(query *string, args *[]any, window queryWindow) {
+	if window.end == nil {
+		return
+	}
+	*query += " and ts < ?"
+	*args = append(*args, window.end.Format(time.RFC3339))
 }
 
 func estimateCost(catalog *pricing.Catalog, model string, input, output, cached, total int64) pricing.Cost {
