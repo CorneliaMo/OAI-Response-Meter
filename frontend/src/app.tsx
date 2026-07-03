@@ -915,6 +915,8 @@ function heatmapOption(days: HeatmapDay[], displayMode: DisplayMode, locale: Loc
   return {
     animation: false,
     tooltip: {
+      trigger: "item",
+      confine: true,
       formatter: (param: unknown) => {
         const day = heatmapTooltipDay(param);
         if (!day) {
@@ -978,6 +980,12 @@ function heatmapOption(days: HeatmapDay[], displayMode: DisplayMode, locale: Loc
                 borderWidth: 2,
               }
             : undefined,
+          emphasis: {
+            itemStyle: {
+              borderColor: "#24292f",
+              borderWidth: 2,
+            },
+          },
         })),
       },
     ],
