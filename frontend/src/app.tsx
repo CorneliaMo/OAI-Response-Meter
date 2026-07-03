@@ -547,16 +547,13 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
         </section>
       </section>
 
-      <section className="panel heatmapPanel">
-        <div className="panelHeader">
-          <div>
-            <p className="panelEyebrow">{t.heatmap.eyebrow}</p>
-            <h3>{t.heatmap.title}</h3>
-          </div>
-          <p className="microcopy">{t.heatmap.subtitle}</p>
-        </div>
-        <HeatmapGrid days={data.heatmap.days} displayMode={displayMode} locale={locale} t={t} />
-      </section>
+      <ChartPanel
+        className="heatmapPanel"
+        description={t.heatmap.subtitle}
+        title={t.heatmap.eyebrow}
+        subtitle={t.heatmap.title}
+        option={heatmapOption(data.heatmap.days, displayMode, locale, t)}
+      />
 
       <section className="panel">
         <div className="panelHeader">
@@ -819,7 +816,7 @@ function LimitsPanel(props: {
   );
 }
 
-function ChartPanel(props: { title: string; subtitle: string; option: echarts.EChartsCoreOption }) {
+function ChartPanel(props: { title: string; subtitle: string; option: echarts.EChartsCoreOption; className?: string; description?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
@@ -846,69 +843,16 @@ function ChartPanel(props: { title: string; subtitle: string; option: echarts.EC
   }, [props.option]);
 
   return (
-    <section className="panel chartPanel">
+    <section className={`panel chartPanel ${props.className ?? ""}`}>
       <div className="panelHeader">
         <div>
           <p className="panelEyebrow">{props.title}</p>
           <h3>{props.subtitle}</h3>
         </div>
+        {props.description ? <p className="microcopy">{props.description}</p> : null}
       </div>
       <div className="chartCanvas" ref={ref} />
     </section>
-  );
-}
-
-function HeatmapGrid(props: { days: HeatmapDay[]; displayMode: DisplayMode; locale: Locale; t: (typeof messages)[Locale] }) {
-  const weeks = chunkWeeks(props.days);
-  const values = props.days.map((day) => getHeatValue(day, props.displayMode)).filter((value) => value > 0);
-  const maxValue = values.length > 0 ? Math.max(...values) : 0;
-  const monthLabels = weeks.map((week) => week.find((day) => day && day.date.endsWith("-01"))?.date ?? "");
-
-  return (
-    <div className="heatmapWrap">
-      <div className="heatmapMonths">
-        {monthLabels.map((label, index) => (
-          <span key={`${label}-${index}`}>{label ? formatMonthLabel(label, props.locale) : ""}</span>
-        ))}
-      </div>
-      <div className="heatmapBody">
-        <div className="heatmapWeekdays">
-          {["", props.t.heatmap.mon, "", props.t.heatmap.wed, "", props.t.heatmap.fri, ""].map((label, index) => (
-            <span key={`${label}-${index}`}>{label}</span>
-          ))}
-        </div>
-        <div className="heatmapGrid">
-          {weeks.map((week, weekIndex) => (
-            <div className="heatmapColumn" key={`week-${weekIndex}`}>
-              {week.map((day, dayIndex) =>
-                day ? (
-                  <div
-                    className={`heatmapCell ${day.in_range ? "inRange" : ""}`}
-                    key={day.date}
-                    style={{ backgroundColor: heatColor(getHeatValue(day, props.displayMode), maxValue) }}
-                    title={props.t.heatmap.tooltip(
-                      day.date,
-                      formatInt(day.requests, props.locale),
-                      formatInt(day.total_tokens, props.locale),
-                      formatCost(day.cost, props.locale, props.t),
-                    )}
-                  />
-                ) : (
-                  <div className="heatmapCell empty" key={`empty-${weekIndex}-${dayIndex}`} />
-                ),
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="heatmapLegend">
-        <span>{props.t.heatmap.less}</span>
-        {[0, 0.25, 0.5, 0.75, 1].map((value) => (
-          <span className="heatmapLegendCell" key={value} style={{ backgroundColor: heatColor(value, 1) }} />
-        ))}
-        <span>{props.t.heatmap.more}</span>
-      </div>
-    </div>
   );
 }
 
@@ -957,43 +901,103 @@ function validateDateRange(fromDate: string, toDate: string, t: (typeof messages
   return "";
 }
 
-function chunkWeeks(days: HeatmapDay[]) {
-  const weeks: Array<Array<HeatmapDay | null>> = [];
-  const alignedDays: Array<HeatmapDay | null> = [...days];
-  const firstDay = days[0] ? new Date(`${days[0].date}T00:00:00`) : null;
-  const leadingBlanks = firstDay && !Number.isNaN(firstDay.getTime()) ? firstDay.getDay() : 0;
-  for (let index = 0; index < leadingBlanks; index++) {
-    alignedDays.unshift(null);
+function heatmapOption(days: HeatmapDay[], displayMode: DisplayMode, locale: Locale, t: (typeof messages)[Locale]): echarts.EChartsCoreOption {
+  const values = days.map((day) => getHeatValue(day, displayMode)).filter((value) => value > 0);
+  const maxValue = values.length > 0 ? Math.max(...values) : 1;
+  const firstDate = days[0]?.date ?? "";
+  const lastDate = days[days.length - 1]?.date ?? "";
+  const dayNameMap = locale === "zh-CN" ? ["日", "一", "二", "三", "四", "五", "六"] : ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const monthNameMap =
+    locale === "zh-CN"
+      ? ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"]
+      : ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  return {
+    animation: false,
+    tooltip: {
+      formatter: (param: unknown) => {
+        const day = heatmapTooltipDay(param);
+        if (!day) {
+          return "";
+        }
+        return t.heatmap.tooltip(day.date, formatInt(day.requests, locale), formatInt(day.total_tokens, locale), formatCost(day.cost, locale, t));
+      },
+    },
+    visualMap: {
+      min: 0,
+      max: maxValue,
+      show: true,
+      calculable: false,
+      orient: "horizontal",
+      left: "right",
+      bottom: 0,
+      itemWidth: 12,
+      itemHeight: 80,
+      text: [t.heatmap.more, t.heatmap.less],
+      textStyle: { color: "#57606a" },
+      inRange: {
+        color: ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"],
+      },
+    },
+    calendar: {
+      top: 42,
+      left: 44,
+      right: 22,
+      bottom: 42,
+      range: [firstDate, lastDate],
+      cellSize: ["auto", 14],
+      splitLine: { show: false },
+      itemStyle: {
+        color: "#ebedf0",
+        borderColor: "#ffffff",
+        borderWidth: 2,
+      },
+      yearLabel: { show: false },
+      monthLabel: {
+        nameMap: monthNameMap,
+        color: "#57606a",
+        fontSize: 11,
+      },
+      dayLabel: {
+        firstDay: 0,
+        nameMap: dayNameMap,
+        color: "#57606a",
+        fontSize: 11,
+      },
+    },
+    series: [
+      {
+        type: "heatmap",
+        coordinateSystem: "calendar",
+        data: days.map((day) => ({
+          value: [day.date, getHeatValue(day, displayMode)],
+          day,
+          itemStyle: day.in_range
+            ? {
+                borderColor: "#0969da",
+                borderWidth: 2,
+              }
+            : undefined,
+        })),
+      },
+    ],
+  };
+}
+
+function heatmapTooltipDay(param: unknown) {
+  if (typeof param !== "object" || param === null) {
+    return null;
   }
-  for (let index = 0; index < alignedDays.length; index += 7) {
-    const week = alignedDays.slice(index, index + 7);
-    while (week.length < 7) {
-      week.push(null);
-    }
-    weeks.push(week);
+  const data = (param as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) {
+    return null;
   }
-  return weeks;
+  const day = (data as { day?: HeatmapDay }).day;
+  return day ?? null;
 }
 
 function getHeatValue(day: HeatmapDay, displayMode: DisplayMode) {
   return displayMode === "cost" ? day.cost.estimated_cost : day.total_tokens;
-}
-
-function heatColor(value: number, maxValue: number) {
-  if (maxValue <= 0 || value <= 0) {
-    return "#ebedf0";
-  }
-  const ratio = Math.min(1, value / maxValue);
-  if (ratio < 0.25) {
-    return "#9be9a8";
-  }
-  if (ratio < 0.5) {
-    return "#40c463";
-  }
-  if (ratio < 0.75) {
-    return "#30a14e";
-  }
-  return "#216e39";
 }
 
 function formatInt(value: number, locale: Locale) {
@@ -1125,14 +1129,6 @@ function formatBucketTime(value: string, bucket: "hour" | "day" | "month", local
     month: "2-digit",
     day: "2-digit",
   }).format(date);
-}
-
-function formatMonthLabel(value: string, locale: Locale) {
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return new Intl.DateTimeFormat(locale, { month: "short" }).format(date);
 }
 
 function truncate(value: string) {
