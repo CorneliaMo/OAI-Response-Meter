@@ -1059,7 +1059,6 @@ order by ts asc
 }
 
 func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int) (RateLimitsResponse, error) {
-	bucket := rateLimitBucket(window.name)
 	pointsQuery := `
 select
   ts,
@@ -1079,41 +1078,23 @@ order by ts asc
 	}
 	defer pointRows.Close()
 
-	pointsMap := map[string]*RateLimitPoint{}
-	resp := RateLimitsResponse{Range: window.name, Bucket: bucket, Limit: limit, Offset: offset}
+	resp := RateLimitsResponse{Range: window.name, Bucket: "event", Limit: limit, Offset: offset}
 	for pointRows.Next() {
 		var ts string
 		var primaryUsed, secondaryUsed int64
 		if err := pointRows.Scan(&ts, &primaryUsed, &secondaryUsed); err != nil {
 			return RateLimitsResponse{}, fmt.Errorf("scan rate limit point: %w", err)
 		}
-		eventTime, err := time.Parse(time.RFC3339Nano, ts)
-		if err != nil {
-			return RateLimitsResponse{}, fmt.Errorf("parse rate limit point timestamp %q: %w", ts, err)
-		}
-		key := bucketStart(eventTime, window.location, bucket).Format(time.RFC3339)
-		point := pointsMap[key]
-		if point == nil {
-			point = &RateLimitPoint{Time: key}
-			pointsMap[key] = point
-		}
-		if primaryUsed > point.PrimaryUsedPercent {
-			point.PrimaryUsedPercent = primaryUsed
-		}
-		if secondaryUsed > point.SecondaryUsedPercent {
-			point.SecondaryUsedPercent = secondaryUsed
-		}
-		point.Events++
+		resp.Points = append(resp.Points, RateLimitPoint{
+			Time:                 ts,
+			PrimaryUsedPercent:   primaryUsed,
+			SecondaryUsedPercent: secondaryUsed,
+			Events:               1,
+		})
 	}
 	if err := pointRows.Err(); err != nil {
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit points: %w", err)
 	}
-	for _, point := range pointsMap {
-		resp.Points = append(resp.Points, *point)
-	}
-	slices.SortFunc(resp.Points, func(a, b RateLimitPoint) int {
-		return strings.Compare(a.Time, b.Time)
-	})
 
 	itemsQuery := `
 select
@@ -1183,17 +1164,6 @@ limit ? offset ?
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit items: %w", err)
 	}
 	return resp, nil
-}
-
-func rateLimitBucket(rangeName string) string {
-	switch rangeName {
-	case "day":
-		return "hour"
-	case "year":
-		return "month"
-	default:
-		return "day"
-	}
 }
 
 func unixTimeString(value int64) string {

@@ -336,6 +336,7 @@ func TestHeatmapEndpointReturns365DaysAndHighlightsRange(t *testing.T) {
 func TestRateLimitsEndpoint(t *testing.T) {
 	rateLimits := []event.RateLimits{
 		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 40, 60, 1_781_881_906, 20, 1440, 1_782_380_758),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 55, 60, 1_781_883_706, 25, 1440, 1_782_382_558),
 		testRateLimit("2026-06-21T11:00:00Z", "plus", false, true, 90, 60, 1_782_039_906, 45, 1440, 1_782_391_558),
 	}
 	handler := testHandlerWithAllEvents(t, nil, nil, rateLimits)
@@ -350,13 +351,16 @@ func TestRateLimitsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if resp.Bucket != "hour" || resp.Limit != 1 || len(resp.Items) != 1 || len(resp.Points) != 2 {
+	if resp.Bucket != "event" || resp.Limit != 1 || len(resp.Items) != 1 || len(resp.Points) != 3 {
 		t.Fatalf("response = %+v", resp)
 	}
 	if !resp.Items[0].LimitReached || resp.Items[0].PrimaryResetAt != "2026-06-21T11:05:06Z" {
 		t.Fatalf("first item = %+v", resp.Items[0])
 	}
-	if resp.Points[1].PrimaryUsedPercent != 90 || resp.Points[1].SecondaryUsedPercent != 45 {
+	if resp.Points[1].Time != "2026-06-21T08:30:00Z" || resp.Points[1].PrimaryUsedPercent != 55 || resp.Points[1].SecondaryUsedPercent != 25 {
+		t.Fatalf("middle point = %+v", resp.Points)
+	}
+	if resp.Points[2].PrimaryUsedPercent != 90 || resp.Points[2].SecondaryUsedPercent != 45 {
 		t.Fatalf("points = %+v", resp.Points)
 	}
 }

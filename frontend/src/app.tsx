@@ -131,7 +131,7 @@ type RateLimitItem = {
 
 type RateLimitsResponse = {
   range: string;
-  bucket: "hour" | "day" | "month";
+  bucket: "event" | "hour" | "day" | "month";
   items: RateLimitItem[];
   points: RateLimitPoint[];
   limit: number;
@@ -1114,12 +1114,12 @@ function formatTime(value: string, locale: Locale, t: (typeof messages)[Locale])
   return date.toLocaleString(locale);
 }
 
-function formatBucketTime(value: string, bucket: "hour" | "day" | "month", locale: Locale) {
+function formatBucketTime(value: string, bucket: "event" | "hour" | "day" | "month", locale: Locale) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  if (bucket === "hour") {
+  if (bucket === "event" || bucket === "hour") {
     return new Intl.DateTimeFormat(locale, {
       month: "2-digit",
       day: "2-digit",
