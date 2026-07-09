@@ -456,6 +456,26 @@ td strong {
   overflow-x: auto;
 }
 
+.cacheKey {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.estimateHeaderActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  text-align: right;
+}
+
+.estimateToggle {
+  flex: none;
+  white-space: nowrap;
+}
+
 table {
   width: 100%;
   min-width: 820px;
@@ -532,8 +552,14 @@ pre {
   }
 
   .topbar,
-  .panelHeader {
+  .panelHeader,
+  .estimateHeaderActions {
     flex-direction: column;
+  }
+
+  .estimateHeaderActions {
+    align-items: flex-start;
+    text-align: left;
   }
 
   .kpiGrid {

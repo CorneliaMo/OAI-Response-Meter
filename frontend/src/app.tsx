@@ -686,7 +686,7 @@ function HistoryPanel(props: {
                   </td>
                   <td>{item.model || t.tables.unknown}</td>
                   <td>{item.transport}</td>
-                  <td>{item.prompt_cache_key || t.tables.none}</td>
+                  <td className="cacheKey" title={item.prompt_cache_key || undefined}>{item.prompt_cache_key ? truncate(item.prompt_cache_key) : t.tables.none}</td>
                   <td>
                     <strong>{item.host}</strong>
                     <span>{item.path}</span>
@@ -864,7 +864,7 @@ function LimitEstimateKpi(props: {
       <strong>{estimate ? formatMoneyValue(estimate.best_limit, "USD", locale) : t.limits.noValidEstimate}</strong>
       <span>
         {estimate
-          ? t.limits.latestEstimateDetail(formatTime(estimate.reset_at_time, locale, t), formatInt(estimate.observations, locale))
+          ? t.limits.latestEstimateDetail(formatResetCountdown(estimate.reset_at_time, locale, t), formatInt(estimate.observations, locale))
           : t.limits.noValidEstimateDetail}
       </span>
     </article>
@@ -879,6 +879,11 @@ function WindowEstimatePanel(props: {
 }) {
   const { estimates, locale, scope, t } = props;
   const scopeLabel = scope === "primary" ? t.limits.primary : t.limits.secondary;
+  const [showInsufficient, setShowInsufficient] = useState(false);
+  const sortedEstimates = useMemo(() => [...estimates].sort((left, right) => right.reset_at - left.reset_at), [estimates]);
+  const usefulEstimates = sortedEstimates.filter(isUsefulEstimate);
+  const insufficientEstimates = sortedEstimates.filter((estimate) => !isUsefulEstimate(estimate));
+  const visibleEstimates = showInsufficient ? sortedEstimates : usefulEstimates;
 
   return (
     <section className="panel">
@@ -887,7 +892,14 @@ function WindowEstimatePanel(props: {
           <p className="panelEyebrow">{t.limits.estimatesEyebrow}</p>
           <h3>{scope === "primary" ? t.limits.primaryEstimatesTitle : t.limits.secondaryEstimatesTitle}</h3>
         </div>
-        <p className="microcopy">{t.limits.estimatesHint}</p>
+        <div className="estimateHeaderActions">
+          <p className="microcopy">{t.limits.estimatesHint}</p>
+          {insufficientEstimates.length > 0 ? (
+            <button className="secondaryButton estimateToggle" onClick={() => setShowInsufficient((current) => !current)} type="button">
+              {showInsufficient ? t.limits.hideInsufficientEstimates : t.limits.showAllEstimates(insufficientEstimates.length)}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="tableWrap">
         <table>
@@ -902,7 +914,7 @@ function WindowEstimatePanel(props: {
             </tr>
           </thead>
           <tbody>
-            {estimates.map((estimate) => (
+            {visibleEstimates.map((estimate) => (
               <tr key={`${estimate.scope}-${estimate.reset_at}`}>
                 <td>
                   <strong>{scopeLabel}</strong>
@@ -910,7 +922,7 @@ function WindowEstimatePanel(props: {
                 </td>
                 <td>
                   <strong>{formatTime(estimate.reset_at_time, locale, t)}</strong>
-                  <span>{estimate.status}</span>
+                  <span>{formatEstimateStatus(estimate.status, t)}</span>
                 </td>
                 <td>
                   <strong>{t.limits.sampleCounts(estimate.observations, estimate.pairs)}</strong>
@@ -921,7 +933,7 @@ function WindowEstimatePanel(props: {
                   <span>{t.limits.visibleCost(formatMoneyValue(estimate.total_visible_cost, "USD", locale))}</span>
                 </td>
                 <td>
-                  <strong>{formatEstimateBounds(estimate, locale)}</strong>
+                  <strong>{formatEstimateBounds(estimate, locale, t)}</strong>
                   <span>{t.limits.margin(formatPercent(estimate.minimum_margin / 100))}</span>
                 </td>
                 <td>
@@ -933,6 +945,7 @@ function WindowEstimatePanel(props: {
           </tbody>
         </table>
         {estimates.length === 0 ? <p className="emptyLine">{t.limits.noScopeEstimates(scopeLabel)}</p> : null}
+        {estimates.length > 0 && visibleEstimates.length === 0 ? <p className="emptyLine">{t.limits.noValidWindows}</p> : null}
       </div>
     </section>
   );
@@ -1210,13 +1223,57 @@ function formatDecimal(value: number, locale: Locale) {
   }).format(Number.isFinite(value) ? value : 0);
 }
 
-function formatEstimateBounds(estimate: RateLimitWindowEstimate, locale: Locale) {
+function formatEstimateBounds(estimate: RateLimitWindowEstimate, locale: Locale, t: (typeof messages)[Locale]) {
   if (!estimate.feasible) {
-    return "n/a";
+    return t.limits.notAvailable;
   }
   const low = formatMoneyValue(estimate.limit_low, "USD", locale);
   const high = Number.isFinite(estimate.limit_high) && estimate.limit_high > 0 ? formatMoneyValue(estimate.limit_high, "USD", locale) : "∞";
   return `${low} - ${high}`;
+}
+
+function isUsefulEstimate(estimate: RateLimitWindowEstimate) {
+  return (estimate.feasible && estimate.best_limit > 0) || estimate.status === "unbounded";
+}
+
+function formatEstimateStatus(status: string, t: (typeof messages)[Locale]) {
+  if (status === "estimated") {
+    return t.limits.statusEstimated;
+  }
+  if (status === "insufficient_data") {
+    return t.limits.statusInsufficientData;
+  }
+  if (status === "unbounded") {
+    return t.limits.statusUnbounded;
+  }
+  return status;
+}
+
+function formatResetCountdown(value: string, locale: Locale, t: (typeof messages)[Locale]) {
+  const resetAt = new Date(value).getTime();
+  if (!Number.isFinite(resetAt)) {
+    return formatTime(value, locale, t);
+  }
+  const remainingSeconds = Math.round((resetAt - Date.now()) / 1000);
+  if (remainingSeconds <= 0) {
+    return t.limits.resetElapsed;
+  }
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+  ];
+  const [unit, size] = units.find(([, seconds]) => remainingSeconds >= seconds) ?? ["second", 1];
+  const count = Math.ceil(remainingSeconds / size);
+  const duration = locale === "zh-CN" ? `${count} ${relativeUnitLabel(unit, locale)}` : `${count} ${relativeUnitLabel(unit, locale)}${count === 1 ? "" : "s"}`;
+  return t.limits.resetsIn(duration);
+}
+
+function relativeUnitLabel(unit: Intl.RelativeTimeFormatUnit, locale: Locale) {
+  const labels = locale === "zh-CN"
+    ? { day: "天", hour: "小时", minute: "分钟", second: "秒" }
+    : { day: "day", hour: "hour", minute: "minute", second: "second" };
+  return labels[unit as keyof typeof labels] ?? unit;
 }
 
 function latestValidEstimate(estimates: RateLimitWindowEstimate[]) {
