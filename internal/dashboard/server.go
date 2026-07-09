@@ -39,17 +39,18 @@ type Server struct {
 }
 
 type SummaryResponse struct {
-	Range           string       `json:"range"`
-	Requests        int64        `json:"requests"`
-	TotalTokens     int64        `json:"total_tokens"`
-	InputTokens     int64        `json:"input_tokens"`
-	OutputTokens    int64        `json:"output_tokens"`
-	CachedTokens    int64        `json:"cached_tokens"`
-	ReasoningTokens int64        `json:"reasoning_tokens"`
-	CacheRatio      float64      `json:"cache_ratio"`
-	ReasoningRatio  float64      `json:"reasoning_ratio"`
-	LatestEventTime string       `json:"latest_event_time"`
-	Cost            pricing.Cost `json:"cost"`
+	Range            string       `json:"range"`
+	Requests         int64        `json:"requests"`
+	TotalTokens      int64        `json:"total_tokens"`
+	InputTokens      int64        `json:"input_tokens"`
+	OutputTokens     int64        `json:"output_tokens"`
+	CachedTokens     int64        `json:"cached_tokens"`
+	CacheWriteTokens int64        `json:"cache_write_tokens"`
+	ReasoningTokens  int64        `json:"reasoning_tokens"`
+	CacheRatio       float64      `json:"cache_ratio"`
+	ReasoningRatio   float64      `json:"reasoning_ratio"`
+	LatestEventTime  string       `json:"latest_event_time"`
+	Cost             pricing.Cost `json:"cost"`
 }
 
 type TimeseriesResponse struct {
@@ -59,14 +60,15 @@ type TimeseriesResponse struct {
 }
 
 type TimeseriesPoint struct {
-	Time            string       `json:"time"`
-	Requests        int64        `json:"requests"`
-	TotalTokens     int64        `json:"total_tokens"`
-	InputTokens     int64        `json:"input_tokens"`
-	OutputTokens    int64        `json:"output_tokens"`
-	CachedTokens    int64        `json:"cached_tokens"`
-	ReasoningTokens int64        `json:"reasoning_tokens"`
-	Cost            pricing.Cost `json:"cost"`
+	Time             string       `json:"time"`
+	Requests         int64        `json:"requests"`
+	TotalTokens      int64        `json:"total_tokens"`
+	InputTokens      int64        `json:"input_tokens"`
+	OutputTokens     int64        `json:"output_tokens"`
+	CachedTokens     int64        `json:"cached_tokens"`
+	CacheWriteTokens int64        `json:"cache_write_tokens"`
+	ReasoningTokens  int64        `json:"reasoning_tokens"`
+	Cost             pricing.Cost `json:"cost"`
 }
 
 type ModelsResponse struct {
@@ -74,14 +76,15 @@ type ModelsResponse struct {
 }
 
 type ModelItem struct {
-	Model           string       `json:"model"`
-	Requests        int64        `json:"requests"`
-	TotalTokens     int64        `json:"total_tokens"`
-	InputTokens     int64        `json:"input_tokens"`
-	OutputTokens    int64        `json:"output_tokens"`
-	CachedTokens    int64        `json:"cached_tokens"`
-	ReasoningTokens int64        `json:"reasoning_tokens"`
-	Cost            pricing.Cost `json:"cost"`
+	Model            string       `json:"model"`
+	Requests         int64        `json:"requests"`
+	TotalTokens      int64        `json:"total_tokens"`
+	InputTokens      int64        `json:"input_tokens"`
+	OutputTokens     int64        `json:"output_tokens"`
+	CachedTokens     int64        `json:"cached_tokens"`
+	CacheWriteTokens int64        `json:"cache_write_tokens"`
+	ReasoningTokens  int64        `json:"reasoning_tokens"`
+	Cost             pricing.Cost `json:"cost"`
 }
 
 type ChainsResponse struct {
@@ -99,6 +102,7 @@ type ChainItem struct {
 	InputTokens         int64        `json:"input_tokens"`
 	OutputTokens        int64        `json:"output_tokens"`
 	CachedTokens        int64        `json:"cached_tokens"`
+	CacheWriteTokens    int64        `json:"cache_write_tokens"`
 	ReasoningTokens     int64        `json:"reasoning_tokens"`
 	Cost                pricing.Cost `json:"cost"`
 }
@@ -123,6 +127,7 @@ type EventItem struct {
 	OutputTokens        int64        `json:"output_tokens"`
 	TotalTokens         int64        `json:"total_tokens"`
 	CachedTokens        int64        `json:"cached_tokens"`
+	CacheWriteTokens    int64        `json:"cache_write_tokens"`
 	ReasoningTokens     int64        `json:"reasoning_tokens"`
 	Cost                pricing.Cost `json:"cost"`
 }
@@ -133,15 +138,16 @@ type HeatmapResponse struct {
 }
 
 type HeatmapDay struct {
-	Date            string       `json:"date"`
-	Requests        int64        `json:"requests"`
-	TotalTokens     int64        `json:"total_tokens"`
-	InputTokens     int64        `json:"input_tokens"`
-	OutputTokens    int64        `json:"output_tokens"`
-	CachedTokens    int64        `json:"cached_tokens"`
-	ReasoningTokens int64        `json:"reasoning_tokens"`
-	Cost            pricing.Cost `json:"cost"`
-	InRange         bool         `json:"in_range"`
+	Date             string       `json:"date"`
+	Requests         int64        `json:"requests"`
+	TotalTokens      int64        `json:"total_tokens"`
+	InputTokens      int64        `json:"input_tokens"`
+	OutputTokens     int64        `json:"output_tokens"`
+	CachedTokens     int64        `json:"cached_tokens"`
+	CacheWriteTokens int64        `json:"cache_write_tokens"`
+	ReasoningTokens  int64        `json:"reasoning_tokens"`
+	Cost             pricing.Cost `json:"cost"`
+	InRange          bool         `json:"in_range"`
 }
 
 type RateLimitsResponse struct {
@@ -223,6 +229,7 @@ type usageEventRow struct {
 	OutputTokens        int64
 	TotalTokens         int64
 	CachedTokens        int64
+	CacheWriteTokens    int64
 	ReasoningTokens     int64
 }
 
@@ -703,11 +710,12 @@ func querySummary(ctx context.Context, db *sql.DB, window queryWindow, catalog *
 		resp.InputTokens += row.InputTokens
 		resp.OutputTokens += row.OutputTokens
 		resp.CachedTokens += row.CachedTokens
+		resp.CacheWriteTokens += row.CacheWriteTokens
 		resp.ReasoningTokens += row.ReasoningTokens
 		if row.Timestamp > resp.LatestEventTime {
 			resp.LatestEventTime = row.Timestamp
 		}
-		resp.Cost = pricing.Add(resp.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
+		resp.Cost = pricing.Add(resp.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheWriteTokens, row.TotalTokens))
 	}
 	if resp.InputTokens > 0 {
 		resp.CacheRatio = float64(resp.CachedTokens) / float64(resp.InputTokens)
@@ -727,6 +735,7 @@ select
   input_tokens,
   output_tokens,
   cached_tokens,
+  cache_write_tokens,
   reasoning_tokens
 from usage_events
 where ts >= ?
@@ -747,8 +756,8 @@ order by ts asc
 	for rows.Next() {
 		var ts string
 		var model string
-		var total, input, output, cached, reasoning int64
-		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &reasoning); err != nil {
+		var total, input, output, cached, cacheWrite, reasoning int64
+		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &cacheWrite, &reasoning); err != nil {
 			return TimeseriesResponse{}, fmt.Errorf("scan timeseries: %w", err)
 		}
 		eventTime, err := time.Parse(time.RFC3339Nano, ts)
@@ -766,8 +775,9 @@ order by ts asc
 		item.InputTokens += input
 		item.OutputTokens += output
 		item.CachedTokens += cached
+		item.CacheWriteTokens += cacheWrite
 		item.ReasoningTokens += reasoning
-		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, model, input, output, cached, total))
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, model, input, output, cached, cacheWrite, total))
 	}
 	if err := rows.Err(); err != nil {
 		return TimeseriesResponse{}, fmt.Errorf("iterate timeseries: %w", err)
@@ -804,18 +814,20 @@ func queryModels(ctx context.Context, db *sql.DB, window queryWindow, catalog *p
 
 	items := map[string]*ModelItem{}
 	for _, row := range rows {
-		item := items[row.Model]
+		model := pricing.CanonicalModelName(row.Model)
+		item := items[model]
 		if item == nil {
-			item = &ModelItem{Model: row.Model}
-			items[row.Model] = item
+			item = &ModelItem{Model: model}
+			items[model] = item
 		}
 		item.Requests++
 		item.TotalTokens += row.TotalTokens
 		item.InputTokens += row.InputTokens
 		item.OutputTokens += row.OutputTokens
 		item.CachedTokens += row.CachedTokens
+		item.CacheWriteTokens += row.CacheWriteTokens
 		item.ReasoningTokens += row.ReasoningTokens
-		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheWriteTokens, row.TotalTokens))
 	}
 	resp := ModelsResponse{Items: make([]ModelItem, 0, len(items))}
 	for _, item := range items {
@@ -871,16 +883,18 @@ func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int,
 		item.InputTokens += row.InputTokens
 		item.OutputTokens += row.OutputTokens
 		item.CachedTokens += row.CachedTokens
+		item.CacheWriteTokens += row.CacheWriteTokens
 		item.ReasoningTokens += row.ReasoningTokens
-		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.CacheWriteTokens, row.TotalTokens))
 		if row.Timestamp < item.StartedAt {
 			item.StartedAt = row.Timestamp
 		}
 		if row.Timestamp > item.EndedAt {
 			item.EndedAt = row.Timestamp
 		}
-		if row.Model != "" && row.Model != "(unknown)" {
-			chain.models[row.Model] = struct{}{}
+		model := pricing.CanonicalModelName(row.Model)
+		if model != "" && model != "(unknown)" {
+			chain.models[model] = struct{}{}
 		}
 		if row.Transport != "" {
 			chain.transports[row.Transport] = struct{}{}
@@ -923,6 +937,7 @@ select
   output_tokens,
   total_tokens,
   cached_tokens,
+  cache_write_tokens,
   reasoning_tokens
 from usage_events
 where ts >= ?
@@ -934,8 +949,8 @@ where ts >= ?
 		args = append(args, filters.ChainRootResponseID)
 	}
 	if filters.Model != "" {
-		query += " and coalesce(nullif(model, ''), '(unknown)') = ?"
-		args = append(args, filters.Model)
+		query += " and (coalesce(nullif(model, ''), '(unknown)') = ? or (model glob ? and strftime('%Y-%m-%d', substr(model, -10)) = substr(model, -10)))"
+		args = append(args, filters.Model, filters.Model+"-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]")
 	}
 	if filters.Transport != "" {
 		query += " and transport = ?"
@@ -972,11 +987,13 @@ where ts >= ?
 			&item.OutputTokens,
 			&item.TotalTokens,
 			&item.CachedTokens,
+			&item.CacheWriteTokens,
 			&item.ReasoningTokens,
 		); err != nil {
 			return EventsResponse{}, fmt.Errorf("scan events: %w", err)
 		}
-		item.Cost = estimateCost(catalog, item.Model, item.InputTokens, item.OutputTokens, item.CachedTokens, item.TotalTokens)
+		item.Model = pricing.CanonicalModelName(item.Model)
+		item.Cost = estimateCost(catalog, item.Model, item.InputTokens, item.OutputTokens, item.CachedTokens, item.CacheWriteTokens, item.TotalTokens)
 		resp.Items = append(resp.Items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -998,6 +1015,7 @@ select
   input_tokens,
   output_tokens,
   cached_tokens,
+  cache_write_tokens,
   reasoning_tokens
 from usage_events
 where ts >= ? and ts < ?
@@ -1013,8 +1031,8 @@ order by ts asc
 	for rows.Next() {
 		var ts string
 		var model string
-		var total, input, output, cached, reasoning int64
-		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &reasoning); err != nil {
+		var total, input, output, cached, cacheWrite, reasoning int64
+		if err := rows.Scan(&ts, &model, &total, &input, &output, &cached, &cacheWrite, &reasoning); err != nil {
 			return HeatmapResponse{}, fmt.Errorf("scan heatmap: %w", err)
 		}
 		eventTime, err := time.Parse(time.RFC3339Nano, ts)
@@ -1033,8 +1051,9 @@ order by ts asc
 		day.InputTokens += input
 		day.OutputTokens += output
 		day.CachedTokens += cached
+		day.CacheWriteTokens += cacheWrite
 		day.ReasoningTokens += reasoning
-		day.Cost = pricing.Add(day.Cost, estimateCost(catalog, model, input, output, cached, total))
+		day.Cost = pricing.Add(day.Cost, estimateCost(catalog, model, input, output, cached, cacheWrite, total))
 	}
 	if err := rows.Err(); err != nil {
 		return HeatmapResponse{}, fmt.Errorf("iterate heatmap: %w", err)
@@ -1387,9 +1406,9 @@ func rateLimitEstimatePriceSignature(catalog *pricing.Catalog) string {
 	fmt.Fprintf(&builder, "currency=%s\nunit=%s\n", catalog.Currency, catalog.Unit)
 	for _, model := range models {
 		rate := catalog.Models[model]
-		fmt.Fprintf(&builder, "%s|%.12g|%.12g|%.12g\n", model, rate.Input, rate.CachedInput, rate.Output)
+		fmt.Fprintf(&builder, "%s|%.12g|%.12g|%.12g|%.12g\n", model, rate.Input, rate.CachedInput, rate.CacheWriteInputRate(), rate.Output)
 		for _, tier := range rate.Tiers {
-			fmt.Fprintf(&builder, "tier|%d|%.12g|%.12g|%.12g\n", tier.MinInputTokens, tier.Input, tier.CachedInput, tier.Output)
+			fmt.Fprintf(&builder, "tier|%d|%.12g|%.12g|%.12g|%.12g\n", tier.MinInputTokens, tier.Input, tier.CachedInput, tier.CacheWriteInputRate(), tier.Output)
 		}
 	}
 	sum := sha256.Sum256([]byte(builder.String()))
@@ -1545,6 +1564,7 @@ select
   input_tokens,
   output_tokens,
   cached_tokens,
+  cache_write_tokens,
   total_tokens
 from usage_events
 where julianday(ts) > julianday(?)
@@ -1563,11 +1583,11 @@ order by julianday(ts) asc, id asc
 	var total float64
 	for rows.Next() {
 		var model string
-		var input, output, cached, totalTokens int64
-		if err := rows.Scan(&model, &input, &output, &cached, &totalTokens); err != nil {
+		var input, output, cached, cacheWrite, totalTokens int64
+		if err := rows.Scan(&model, &input, &output, &cached, &cacheWrite, &totalTokens); err != nil {
 			return 0, false, fmt.Errorf("scan usage cost between rate limit events: %w", err)
 		}
-		cost := estimateCost(catalog, model, input, output, cached, totalTokens)
+		cost := estimateCost(catalog, model, input, output, cached, cacheWrite, totalTokens)
 		if cost.Status != "priced" {
 			return 0, false, nil
 		}
@@ -1858,6 +1878,7 @@ select
   output_tokens,
   total_tokens,
   cached_tokens,
+  cache_write_tokens,
   reasoning_tokens
 from usage_events
 where ts >= ?
@@ -1885,10 +1906,12 @@ order by ts asc, id asc
 			&row.OutputTokens,
 			&row.TotalTokens,
 			&row.CachedTokens,
+			&row.CacheWriteTokens,
 			&row.ReasoningTokens,
 		); err != nil {
 			return nil, fmt.Errorf("scan usage events: %w", err)
 		}
+		row.Model = pricing.CanonicalModelName(row.Model)
 		events = append(events, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -1897,13 +1920,14 @@ order by ts asc, id asc
 	return events, nil
 }
 
-func estimateCost(catalog *pricing.Catalog, model string, input, output, cached, total int64) pricing.Cost {
+func estimateCost(catalog *pricing.Catalog, model string, input, output, cached, cacheWrite, total int64) pricing.Cost {
 	return catalog.Estimate(pricing.Usage{
-		Model:        model,
-		InputTokens:  input,
-		OutputTokens: output,
-		CachedTokens: cached,
-		TotalTokens:  total,
+		Model:            model,
+		InputTokens:      input,
+		OutputTokens:     output,
+		CachedTokens:     cached,
+		CacheWriteTokens: cacheWrite,
+		TotalTokens:      total,
 	})
 }
 

@@ -23,6 +23,7 @@ type SummaryResponse = {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
   cache_ratio: number;
   reasoning_ratio: number;
@@ -37,6 +38,7 @@ type TimeseriesPoint = {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
   cost: Cost;
 };
@@ -54,6 +56,7 @@ type ModelItem = {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
   cost: Cost;
 };
@@ -76,6 +79,7 @@ type EventItem = {
   output_tokens: number;
   total_tokens: number;
   cached_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
   cost: Cost;
 };
@@ -93,6 +97,7 @@ type HeatmapDay = {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  cache_write_tokens: number;
   reasoning_tokens: number;
   cost: Cost;
   in_range: boolean;
@@ -461,7 +466,11 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
         { label: t.kpi.totalTokens, value: formatInt(data.summary.total_tokens, locale), detail: describeCost(data.summary.cost, locale, t) },
         { label: t.kpi.input, value: formatInt(data.summary.input_tokens, locale), detail: t.kpi.promptSideUsage },
         { label: t.kpi.output, value: formatInt(data.summary.output_tokens, locale), detail: t.kpi.completionSideUsage },
-        { label: t.kpi.cached, value: formatInt(data.summary.cached_tokens, locale), detail: t.kpi.cachedInput },
+        {
+          label: t.kpi.cached,
+          value: formatInt(data.summary.cached_tokens, locale),
+          detail: t.kpi.cachedReadWrite(formatInt(data.summary.cached_tokens, locale), formatInt(data.summary.cache_write_tokens, locale)),
+        },
         { label: t.kpi.reasoning, value: formatInt(data.summary.reasoning_tokens, locale), detail: t.kpi.reportedReasoning },
       ];
 
@@ -588,7 +597,22 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
         <div className="compositionBars">
           <CompositionBar label={t.kpi.input} locale={locale} tone="blue" total={data.summary.total_tokens} value={data.summary.input_tokens} />
           <CompositionBar label={t.kpi.output} locale={locale} tone="cyan" total={data.summary.total_tokens} value={data.summary.output_tokens} />
-          <CompositionBar label={t.kpi.cached} locale={locale} tone="green" total={data.summary.total_tokens} value={data.summary.cached_tokens} />
+          <CompositionBar
+            detail={t.composition.cacheReadDetail(formatInt(data.summary.cached_tokens, locale), formatInt(data.summary.cache_write_tokens, locale))}
+            label={t.kpi.cached}
+            locale={locale}
+            tone="green"
+            total={data.summary.total_tokens}
+            value={data.summary.cached_tokens}
+          />
+          <CompositionBar
+            detail={t.composition.cacheWriteDetail}
+            label={t.kpi.cacheWrite}
+            locale={locale}
+            tone="green"
+            total={data.summary.total_tokens}
+            value={data.summary.cache_write_tokens}
+          />
           <CompositionBar label={t.kpi.reasoning} locale={locale} tone="slate" total={data.summary.total_tokens} value={data.summary.reasoning_tokens} />
         </div>
       </section>
@@ -991,13 +1015,14 @@ function ChartPanel(props: { title: string; subtitle: string; option: echarts.EC
   );
 }
 
-function CompositionBar(props: { label: string; value: number; total: number; tone: string; locale: Locale }) {
+function CompositionBar(props: { detail?: string; label: string; value: number; total: number; tone: string; locale: Locale }) {
   const ratio = props.total > 0 ? props.value / props.total : 0;
   return (
     <div className="compositionRow">
       <div className="compositionLabel">
         <span>{props.label}</span>
         <strong>{formatInt(props.value, props.locale)}</strong>
+        {props.detail ? <span className="compositionDetail">{props.detail}</span> : null}
       </div>
       <div className="compositionTrack">
         <div className={`compositionFill ${props.tone}`} style={{ width: `${Math.max(ratio * 100, props.value > 0 ? 4 : 0)}%` }} />

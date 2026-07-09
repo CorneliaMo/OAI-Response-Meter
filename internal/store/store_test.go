@@ -42,7 +42,8 @@ func TestWriteBatchStoresUsageAndJSONL(t *testing.T) {
 	var total int64
 	var root string
 	var promptCacheKey string
-	if err := db.QueryRowContext(ctx, `select total_tokens, chain_root_response_id, prompt_cache_key from usage_events where response_id = ?`, "resp_1").Scan(&total, &root, &promptCacheKey); err != nil {
+	var cacheWrite int64
+	if err := db.QueryRowContext(ctx, `select total_tokens, chain_root_response_id, prompt_cache_key, cache_write_tokens from usage_events where response_id = ?`, "resp_1").Scan(&total, &root, &promptCacheKey, &cacheWrite); err != nil {
 		t.Fatalf("query usage error = %v", err)
 	}
 	if total != 30 {
@@ -53,6 +54,9 @@ func TestWriteBatchStoresUsageAndJSONL(t *testing.T) {
 	}
 	if promptCacheKey != "session-uuid" {
 		t.Fatalf("prompt_cache_key = %q, want session-uuid", promptCacheKey)
+	}
+	if cacheWrite != 2 {
+		t.Fatalf("cache_write_tokens = %d, want 2", cacheWrite)
 	}
 
 	data, err := os.ReadFile(jsonlPath)
@@ -194,11 +198,12 @@ insert into usage_events (
 	}
 	defer db.Close()
 	var previous, root, promptCacheKey string
-	if err := db.QueryRowContext(ctx, `select previous_response_id, chain_root_response_id, prompt_cache_key from usage_events where response_id = ?`, "resp_old").Scan(&previous, &root, &promptCacheKey); err != nil {
+	var cacheWrite int64
+	if err := db.QueryRowContext(ctx, `select previous_response_id, chain_root_response_id, prompt_cache_key, cache_write_tokens from usage_events where response_id = ?`, "resp_old").Scan(&previous, &root, &promptCacheKey, &cacheWrite); err != nil {
 		t.Fatalf("query migrated row error = %v", err)
 	}
-	if previous != "" || root != "resp_old" || promptCacheKey != "" {
-		t.Fatalf("previous/root/prompt_cache_key = %q/%q/%q, want empty/resp_old/empty", previous, root, promptCacheKey)
+	if previous != "" || root != "resp_old" || promptCacheKey != "" || cacheWrite != 0 {
+		t.Fatalf("previous/root/prompt_cache_key/cache_write = %q/%q/%q/%d, want empty/resp_old/empty/0", previous, root, promptCacheKey, cacheWrite)
 	}
 }
 
@@ -279,6 +284,7 @@ func sampleUsage(responseID string) event.Usage {
 		OutputTokens:       20,
 		TotalTokens:        30,
 		CachedTokens:       4,
+		CacheWriteTokens:   2,
 		ReasoningTokens:    5,
 	}
 }

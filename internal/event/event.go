@@ -40,6 +40,7 @@ type Usage struct {
 	OutputTokens        int64  `json:"output_tokens"`
 	TotalTokens         int64  `json:"total_tokens"`
 	CachedTokens        int64  `json:"cached_tokens"`
+	CacheWriteTokens    int64  `json:"cache_write_tokens"`
 	ReasoningTokens     int64  `json:"reasoning_tokens"`
 }
 
@@ -119,7 +120,7 @@ func (u Usage) Validate() error {
 	if strings.TrimSpace(u.Host) == "" {
 		return errors.New("missing host")
 	}
-	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CachedTokens < 0 || u.ReasoningTokens < 0 {
+	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 || u.CachedTokens < 0 || u.CacheWriteTokens < 0 || u.ReasoningTokens < 0 {
 		return errors.New("token counts must be non-negative")
 	}
 	return nil

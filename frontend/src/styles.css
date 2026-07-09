@@ -419,6 +419,11 @@ td strong {
   gap: 3px;
 }
 
+.compositionDetail {
+  color: #57606a;
+  font-size: 0.84rem;
+}
+
 .compositionTrack {
   height: 10px;
   overflow: hidden;

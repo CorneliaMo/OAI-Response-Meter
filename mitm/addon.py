@@ -206,6 +206,7 @@ def event_from_response(response: dict[str, Any], transport: str, host: str, pat
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cached_tokens": _int(input_details.get("cached_tokens")),
+        "cache_write_tokens": _int(input_details.get("cache_write_tokens")),
         "reasoning_tokens": _int(output_details.get("reasoning_tokens")),
     }
 

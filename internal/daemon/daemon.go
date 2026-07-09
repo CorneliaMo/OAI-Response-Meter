@@ -178,7 +178,7 @@ func (d *Daemon) logDatagram(item event.Datagram) {
 		if usage.PromptCacheKey == "" {
 			d.logf("warning response_id=%s missing optional prompt_cache_key", usage.ResponseID)
 		}
-		d.logf("received response_id=%s previous_response_id=%s prompt_cache_key=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d reasoning=%d",
+		d.logf("received response_id=%s previous_response_id=%s prompt_cache_key=%s transport=%s host=%s path=%s model=%s input=%d output=%d total=%d cached=%d cache_write=%d reasoning=%d",
 			usage.ResponseID,
 			usage.PreviousResponseID,
 			usage.PromptCacheKey,
@@ -190,6 +190,7 @@ func (d *Daemon) logDatagram(item event.Datagram) {
 			usage.OutputTokens,
 			usage.TotalTokens,
 			usage.CachedTokens,
+			usage.CacheWriteTokens,
 			usage.ReasoningTokens,
 		)
 	case event.KindRateLimits:

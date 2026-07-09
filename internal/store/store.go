@@ -75,8 +75,8 @@ func (s *Store) WriteBatch(ctx context.Context, events []event.Usage) (WriteResu
 	stmt, err := tx.PrepareContext(ctx, `
 insert or ignore into usage_events (
   ts, source, transport, host, path, response_id, previous_response_id, chain_root_response_id, prompt_cache_key, model,
-  input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("prepare insert: %w", err)
@@ -101,6 +101,7 @@ insert or ignore into usage_events (
 			usage.OutputTokens,
 			usage.TotalTokens,
 			usage.CachedTokens,
+			usage.CacheWriteTokens,
 			usage.ReasoningTokens,
 		)
 		if err != nil {
@@ -264,6 +265,7 @@ func (s *Store) init(ctx context.Context) error {
   output_tokens integer not null default 0,
   total_tokens integer not null default 0,
   cached_tokens integer not null default 0,
+  cache_write_tokens integer not null default 0,
   reasoning_tokens integer not null default 0,
   created_at text not null default current_timestamp
 )`,
@@ -272,6 +274,7 @@ func (s *Store) init(ctx context.Context) error {
 		`alter table usage_events add column previous_response_id text not null default ''`,
 		`alter table usage_events add column chain_root_response_id text not null default ''`,
 		`alter table usage_events add column prompt_cache_key text not null default ''`,
+		`alter table usage_events add column cache_write_tokens integer not null default 0`,
 		`update usage_events set chain_root_response_id = response_id where chain_root_response_id = ''`,
 		`create index if not exists idx_usage_events_previous_response_id on usage_events(previous_response_id)`,
 		`create index if not exists idx_usage_events_chain_root_response_id on usage_events(chain_root_response_id)`,

@@ -87,6 +87,93 @@ func TestTimeseriesEndpoint(t *testing.T) {
 	}
 }
 
+func TestSummaryAndTimeseriesIncludeCacheWriteTokens(t *testing.T) {
+	usages := []event.Usage{
+		{
+			Schema:           event.SchemaVersion,
+			Timestamp:        "2026-06-21T08:00:00Z",
+			Source:           "mitmproxy",
+			Transport:        "https-json",
+			Host:             "api.openai.com",
+			Path:             "/v1/responses",
+			ResponseID:       "resp_cache_write_a",
+			Model:            "gpt-test",
+			InputTokens:      100,
+			OutputTokens:     50,
+			TotalTokens:      150,
+			CachedTokens:     20,
+			CacheWriteTokens: 10,
+		},
+		{
+			Schema:           event.SchemaVersion,
+			Timestamp:        "2026-06-21T09:00:00Z",
+			Source:           "mitmproxy",
+			Transport:        "https-json",
+			Host:             "api.openai.com",
+			Path:             "/v1/responses",
+			ResponseID:       "resp_cache_write_b",
+			Model:            "gpt-test",
+			InputTokens:      80,
+			OutputTokens:     20,
+			TotalTokens:      100,
+			CachedTokens:     15,
+			CacheWriteTokens: 5,
+		},
+	}
+	handler := testHandlerWithAllEvents(t, nil, usages, nil)
+
+	summary := requestSummary(t, handler, "/api/summary?range=day")
+	if summary.CacheWriteTokens != 15 {
+		t.Fatalf("summary cache_write_tokens = %d, want 15", summary.CacheWriteTokens)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/timeseries?range=day&bucket=day", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeseries status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var timeseries TimeseriesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &timeseries); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(timeseries.Points) != 1 || timeseries.Points[0].CacheWriteTokens != 15 {
+		t.Fatalf("timeseries points = %+v", timeseries.Points)
+	}
+}
+
+func TestDatedModelSnapshotsAreGroupedAndFilteredByBaseModel(t *testing.T) {
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-5.4-mini": {Input: 1, CachedInput: 0.1, Output: 2},
+		},
+	}
+	usages := []event.Usage{
+		testUsage("resp_model_base", "", "gpt-5.4-mini", "https-json", "2026-06-21T08:00:00Z", 100),
+		testUsage("resp_model_snapshot", "", "gpt-5.4-mini-2026-03-17", "https-json", "2026-06-21T09:00:00Z", 100),
+	}
+	handler := testHandlerWithAllEvents(t, catalog, usages, nil)
+
+	models := requestModels(t, handler, "/api/models?range=day")
+	if len(models.Items) != 1 || models.Items[0].Model != "gpt-5.4-mini" || models.Items[0].Requests != 2 {
+		t.Fatalf("models = %+v", models.Items)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/events?range=day&model=gpt-5.4-mini", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("events status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var events EventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(events.Items) != 2 || events.Items[1].Model != "gpt-5.4-mini" {
+		t.Fatalf("events = %+v", events.Items)
+	}
+}
+
 func TestRangeUsesRequestedTimezoneBoundaries(t *testing.T) {
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -418,6 +505,59 @@ func TestRateLimitWindowEstimatesUseScopeResetWindow(t *testing.T) {
 	}
 }
 
+func TestRateLimitWindowEstimatesUseCacheWriteCost(t *testing.T) {
+	cacheWriteRate := 1.25
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 1, CachedInput: 0, CacheWriteInput: &cacheWriteRate, Output: 1},
+		},
+	}
+	usages := []event.Usage{
+		{
+			Schema:           event.SchemaVersion,
+			Timestamp:        "2026-06-21T08:10:00Z",
+			Source:           "mitmproxy",
+			Transport:        "https-json",
+			Host:             "api.openai.com",
+			Path:             "/v1/responses",
+			ResponseID:       "estimate_cache_write_1",
+			Model:            "gpt-test",
+			InputTokens:      100_000,
+			OutputTokens:     0,
+			TotalTokens:      100_000,
+			CacheWriteTokens: 100_000,
+		},
+		{
+			Schema:           event.SchemaVersion,
+			Timestamp:        "2026-06-21T08:40:00Z",
+			Source:           "mitmproxy",
+			Transport:        "https-json",
+			Host:             "api.openai.com",
+			Path:             "/v1/responses",
+			ResponseID:       "estimate_cache_write_2",
+			Model:            "gpt-test",
+			InputTokens:      100_000,
+			OutputTokens:     0,
+			TotalTokens:      100_000,
+			CacheWriteTokens: 100_000,
+		},
+	}
+	rateLimits := []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, 1_782_000_000, 50, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, 1_782_000_000, 60, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, 1_782_100_000, 70, 1440, 1_782_500_000),
+	}
+	handler := testHandlerWithAllEvents(t, catalog, usages, rateLimits)
+
+	resp := requestRateLimits(t, handler)
+	secondary := findEstimate(t, resp.Estimates, "secondary", 1_782_500_000)
+	if math.Abs(secondary.TotalVisibleCost-0.25) > 0.000001 {
+		t.Fatalf("secondary total_visible_cost = %f, want 0.25", secondary.TotalVisibleCost)
+	}
+}
+
 func TestRateLimitWindowEstimateCachePersistsExpiredWindow(t *testing.T) {
 	catalog := &pricing.Catalog{
 		Currency: "USD",
@@ -689,11 +829,13 @@ func TestTieredPricingUsesPerEventCostsInAggregates(t *testing.T) {
 }
 
 func TestRateLimitEstimatePriceSignatureIncludesTiers(t *testing.T) {
+	cacheWriteBase := 2.5
+	cacheWriteTier := 6.25
 	baseCatalog := &pricing.Catalog{
 		Currency: "USD",
 		Unit:     pricing.UnitPer1MTokens,
 		Models: map[string]pricing.Rate{
-			"gpt-test": {Input: 2, CachedInput: 0.2, Output: 8},
+			"gpt-test": {Input: 2, CachedInput: 0.2, CacheWriteInput: &cacheWriteBase, Output: 8},
 		},
 	}
 	tieredCatalog := &pricing.Catalog{
@@ -701,11 +843,12 @@ func TestRateLimitEstimatePriceSignatureIncludesTiers(t *testing.T) {
 		Unit:     pricing.UnitPer1MTokens,
 		Models: map[string]pricing.Rate{
 			"gpt-test": {
-				Input:       2,
-				CachedInput: 0.2,
-				Output:      8,
+				Input:           2,
+				CachedInput:     0.2,
+				CacheWriteInput: &cacheWriteBase,
+				Output:          8,
 				Tiers: []pricing.Tier{
-					{MinInputTokens: 272001, Input: 5, CachedInput: 0.5, Output: 20},
+					{MinInputTokens: 272001, Input: 5, CachedInput: 0.5, CacheWriteInput: &cacheWriteTier, Output: 20},
 				},
 			},
 		},
@@ -713,6 +856,28 @@ func TestRateLimitEstimatePriceSignatureIncludesTiers(t *testing.T) {
 
 	if rateLimitEstimatePriceSignature(baseCatalog) == rateLimitEstimatePriceSignature(tieredCatalog) {
 		t.Fatal("expected distinct signatures when pricing tiers change")
+	}
+}
+
+func TestRateLimitEstimatePriceSignatureIncludesCacheWriteRate(t *testing.T) {
+	cacheWriteA := 2.5
+	cacheWriteB := 3.0
+	catalogA := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 2, CachedInput: 0.2, CacheWriteInput: &cacheWriteA, Output: 8},
+		},
+	}
+	catalogB := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 2, CachedInput: 0.2, CacheWriteInput: &cacheWriteB, Output: 8},
+		},
+	}
+	if rateLimitEstimatePriceSignature(catalogA) == rateLimitEstimatePriceSignature(catalogB) {
+		t.Fatal("expected distinct signatures when cache write pricing changes")
 	}
 }
 

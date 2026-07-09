@@ -52,7 +52,24 @@ class AddonTest(unittest.TestCase):
         self.assertEqual(event["transport"], "sse")
         self.assertEqual(event["input_tokens"], 4)
         self.assertEqual(event["cached_tokens"], 1)
+        self.assertEqual(event["cache_write_tokens"], 0)
         self.assertEqual(event["reasoning_tokens"], 2)
+
+    def test_extract_cache_write_tokens_from_response_completed_payload(self):
+        flow = Obj(
+            request=Obj(host="api.openai.com", path="/v1/responses"),
+            response=Obj(
+                headers={"content-type": "application/json"},
+                text='{"type":"response.completed","response":{"id":"resp_cache_write","model":"gpt-test","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":2}}}}',
+            ),
+        )
+
+        event = extract_http_usage(flow)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["response_id"], "resp_cache_write")
+        self.assertEqual(event["cached_tokens"], 4)
+        self.assertEqual(event["cache_write_tokens"], 2)
 
     def test_extract_websocket_server_usage(self):
         flow = Obj(

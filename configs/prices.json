@@ -7,12 +7,14 @@
     "gpt-5.6-sol": {
       "input": 5.0,
       "cached_input": 0.5,
+      "cache_write_input": 6.25,
       "output": 30.0,
       "tiers": [
         {
           "min_input_tokens": 272001,
           "input": 10.0,
-          "cached_input": 1,
+          "cached_input": 1.0,
+          "cache_write_input": 12.5,
           "output": 45.0
         }
       ]
@@ -20,12 +22,14 @@
     "gpt-5.6-terra": {
       "input": 2.5,
       "cached_input": 0.25,
+      "cache_write_input": 3.125,
       "output": 15.0,
       "tiers": [
         {
           "min_input_tokens": 272001,
           "input": 5.0,
           "cached_input": 0.5,
+          "cache_write_input": 6.25,
           "output": 22.5
         }
       ]
@@ -33,12 +37,14 @@
     "gpt-5.6-luna": {
       "input": 1.0,
       "cached_input": 0.1,
+      "cache_write_input": 1.25,
       "output": 6.0,
       "tiers": [
         {
           "min_input_tokens": 272001,
           "input": 2.0,
           "cached_input": 0.2,
+          "cache_write_input": 2.5,
           "output": 9.0
         }
       ]
@@ -94,4 +100,3 @@
     }
   }
 }
-

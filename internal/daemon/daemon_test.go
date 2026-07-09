@@ -207,7 +207,8 @@ func sampleDatagram(responseID string) []byte {
 		"model": "gpt-test",
 		"input_tokens": 10,
 		"output_tokens": 20,
-		"total_tokens": 30
+		"total_tokens": 30,
+		"cache_write_tokens": 2
 	}`)
 }
 

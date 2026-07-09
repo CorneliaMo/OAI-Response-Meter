@@ -141,7 +141,7 @@ The meter records only usage metadata:
 - previous response id and chain root response id
 - optional observed `prompt_cache_key`, when present on completed responses
 - model
-- input, output, total, cached, and reasoning token counts
+- input, output, total, cached, cache-write, and reasoning token counts
 - observed Codex rate-limit metadata, when an internal `codex.rate_limits`
   WebSocket event is present
 
@@ -165,6 +165,16 @@ model, and token counts.
 `prompt_cache_key` is observed metadata and is not treated as a required
 Responses API field. Missing values are stored as an empty string; with
 `--verbose`, the daemon logs a small warning for that event.
+
+`cache_write_tokens` is extracted from Responses API
+`usage.input_tokens_details.cache_write_tokens` when present. Older captured
+responses, older JSONL lines, and existing SQLite databases remain compatible:
+missing `cache_write_tokens` is treated as `0`.
+
+Model snapshots with an exact valid date suffix, such as
+`gpt-5.4-mini-2026-03-17`, are displayed and priced as their base model
+(`gpt-5.4-mini`). Other suffixes and model names that merely share a prefix
+are not folded together.
 
 `codex.rate_limits` is not a documented OpenAI API event. When it appears, the
 meter stores it best-effort in a separate table with the raw JSON and extracted
@@ -194,19 +204,21 @@ Estimated cost uses `configs/prices.json` by default and can be overridden with
 mark only those tokens as unpriced. Prices are stored as USD per 1M tokens and
 are meant to be edited by the user when OpenAI pricing changes.
 
-Each model entry supports base `input`, `cached_input`, and `output` rates plus
-an optional ordered `tiers` array:
+Each model entry supports base `input`, `cached_input`, optional
+`cache_write_input`, and `output` rates plus an optional ordered `tiers` array:
 
 ```json
 {
   "input": 2.5,
   "cached_input": 0.25,
+  "cache_write_input": 3.125,
   "output": 15.0,
   "tiers": [
     {
       "min_input_tokens": 272001,
       "input": 5.0,
       "cached_input": 0.5,
+      "cache_write_input": 6.25,
       "output": 22.5
     }
   ]
@@ -216,9 +228,22 @@ an optional ordered `tiers` array:
 Tier selection is per usage event, based on that request's total
 `input_tokens`. It is not progressive. If an event crosses a tier threshold,
 the whole request uses that tier's rates for uncached input, cached input, and
-output. For example, `min_input_tokens: 272001` means requests with exactly
+cache-write input when configured, plus output. If `cache_write_input` is
+omitted at the selected base or tier rate, the normal `input` rate is used for
+cache-write tokens. For example, `min_input_tokens: 272001` means requests with exactly
 272,000 input tokens still use the base rate, while 272,001 switches the entire
 event to the long-context tier.
+
+Estimated billing treats cache-write tokens as a subset of input tokens. For a
+priced event, uncached input is calculated as:
+
+```text
+max(0, input_tokens - cached_tokens - cache_write_tokens)
+```
+
+That remainder uses the selected `input` rate, `cached_tokens` uses
+`cached_input`, `cache_write_tokens` uses `cache_write_input` or falls back to
+`input`, and output tokens use `output`.
 
 ## Proxy Overhead Check
 

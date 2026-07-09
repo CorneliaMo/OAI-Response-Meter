@@ -71,6 +71,7 @@ export const messages = {
       output: "Output",
       reasoning: "Reasoning",
       cached: "Cached",
+      cacheWrite: "Cache Write",
       cacheRatio: "Cache Ratio",
       reasoningRatio: "Reasoning Ratio",
       coveredByPrices: "covered by prices.json",
@@ -83,6 +84,7 @@ export const messages = {
       completionSideUsage: "completion-side usage",
       reportedReasoning: "reported reasoning",
       cachedInput: "cached input",
+      cachedReadWrite: (read: string, write: string) => `${read} read, ${write} write`,
       cachedOverInput: "cached / input",
       reasoningOverTotal: "reasoning / total",
     },
@@ -117,6 +119,8 @@ export const messages = {
     composition: {
       eyebrow: "Token Composition",
       title: "Input, output, cached, and reasoning mix",
+      cacheReadDetail: (read: string, write: string) => `${read} cache read, ${write} cache write`,
+      cacheWriteDetail: "subset of input",
     },
     filters: {
       model: "Model",
@@ -295,6 +299,7 @@ export const messages = {
       output: "输出",
       reasoning: "推理",
       cached: "缓存",
+      cacheWrite: "缓存写入",
       cacheRatio: "缓存占比",
       reasoningRatio: "推理占比",
       coveredByPrices: "已被 prices.json 覆盖",
@@ -307,6 +312,7 @@ export const messages = {
       completionSideUsage: "输出侧用量",
       reportedReasoning: "已报告推理用量",
       cachedInput: "缓存输入",
+      cachedReadWrite: (read: string, write: string) => `${read} 读取，${write} 写入`,
       cachedOverInput: "缓存 / 输入",
       reasoningOverTotal: "推理 / 总量",
     },
@@ -341,6 +347,8 @@ export const messages = {
     composition: {
       eyebrow: "Token 构成",
       title: "输入、输出、缓存与推理占比",
+      cacheReadDetail: (read: string, write: string) => `${read} 缓存读取，${write} 缓存写入`,
+      cacheWriteDetail: "属于输入子集",
     },
     filters: {
       model: "模型",
