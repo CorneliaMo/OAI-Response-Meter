@@ -129,11 +129,34 @@ type RateLimitItem = {
   raw_json: string;
 };
 
+type RateLimitWindowEstimate = {
+  scope: "primary" | "secondary";
+  reset_at: number;
+  reset_at_time: string;
+  window_minutes: number;
+  events: number;
+  pairs: number;
+  skipped_pairs: number;
+  observations: number;
+  total_visible_cost: number;
+  feasible: boolean;
+  minimum_margin: number;
+  limit_low: number;
+  limit_high: number;
+  best_limit: number;
+  best_initial_used: number;
+  best_initial_percent: number;
+  best_score: number;
+  status: string;
+  message: string;
+};
+
 type RateLimitsResponse = {
   range: string;
   bucket: "event" | "hour" | "day" | "month";
   items: RateLimitItem[];
   points: RateLimitPoint[];
+  estimates: RateLimitWindowEstimate[];
   limit: number;
   offset: number;
 };
@@ -752,6 +775,61 @@ function LimitsPanel(props: {
       <section className="panel">
         <div className="panelHeader">
           <div>
+            <p className="panelEyebrow">{t.limits.estimatesEyebrow}</p>
+            <h3>{t.limits.estimatesTitle}</h3>
+          </div>
+          <p className="microcopy">{t.limits.estimatesHint}</p>
+        </div>
+        <div className="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t.limits.window}</th>
+                <th>{t.limits.resetAt}</th>
+                <th>{t.limits.samples}</th>
+                <th>{t.limits.estimatedLimit}</th>
+                <th>{t.limits.bounds}</th>
+                <th>{t.limits.fit}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.estimates.map((estimate) => (
+                <tr key={`${estimate.scope}-${estimate.reset_at}`}>
+                  <td>
+                    <strong>{estimate.scope === "primary" ? t.limits.primary : t.limits.secondary}</strong>
+                    <span>{t.limits.windowMinutes(estimate.window_minutes)}</span>
+                  </td>
+                  <td>
+                    <strong>{formatTime(estimate.reset_at_time, locale, t)}</strong>
+                    <span>{estimate.status}</span>
+                  </td>
+                  <td>
+                    <strong>{t.limits.sampleCounts(estimate.observations, estimate.pairs)}</strong>
+                    <span>{estimate.skipped_pairs > 0 ? t.limits.skippedPairs(estimate.skipped_pairs) : t.limits.noSkippedPairs}</span>
+                  </td>
+                  <td>
+                    <strong>{estimate.feasible && estimate.best_limit > 0 ? formatMoneyValue(estimate.best_limit, "USD", locale) : t.tables.none}</strong>
+                    <span>{t.limits.visibleCost(formatMoneyValue(estimate.total_visible_cost, "USD", locale))}</span>
+                  </td>
+                  <td>
+                    <strong>{formatEstimateBounds(estimate, locale)}</strong>
+                    <span>{t.limits.margin(formatPercent(estimate.minimum_margin / 100))}</span>
+                  </td>
+                  <td>
+                    <strong>{estimate.feasible ? t.limits.mse(formatDecimal(estimate.best_score, locale)) : t.limits.notEstimated}</strong>
+                    <span>{estimate.message || t.limits.initialUsed(formatMoneyValue(estimate.best_initial_used, "USD", locale), formatPercent(estimate.best_initial_percent / 100))}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.estimates.length === 0 ? <p className="emptyLine">{t.limits.noEstimates}</p> : null}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panelHeader">
+          <div>
             <p className="panelEyebrow">{t.limits.tableEyebrow}</p>
             <h3>{t.limits.tableTitle}</h3>
           </div>
@@ -1080,6 +1158,21 @@ function formatMoneyValue(value: number, currency: string, locale: Locale) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatDecimal(value: number, locale: Locale) {
+  return new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 6,
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatEstimateBounds(estimate: RateLimitWindowEstimate, locale: Locale) {
+  if (!estimate.feasible) {
+    return "n/a";
+  }
+  const low = formatMoneyValue(estimate.limit_low, "USD", locale);
+  const high = Number.isFinite(estimate.limit_high) && estimate.limit_high > 0 ? formatMoneyValue(estimate.limit_high, "USD", locale) : "∞";
+  return `${low} - ${high}`;
 }
 
 function describeCost(cost: Cost, locale: Locale, t: (typeof messages)[Locale]) {

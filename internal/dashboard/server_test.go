@@ -365,6 +365,57 @@ func TestRateLimitsEndpoint(t *testing.T) {
 	}
 }
 
+func TestRateLimitWindowEstimatesUseScopeResetWindow(t *testing.T) {
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 1, CachedInput: 0, Output: 1},
+		},
+	}
+	usages := []event.Usage{
+		testUsage("estimate_1", "", "gpt-test", "https-json", "2026-06-21T08:10:00Z", 100_000),
+		testUsage("estimate_2", "", "gpt-test", "https-json", "2026-06-21T08:40:00Z", 100_000),
+	}
+	rateLimits := []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, 1_782_000_000, 50, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, 1_782_000_000, 60, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, 1_782_100_000, 70, 1440, 1_782_500_000),
+	}
+	handler := testHandlerWithAllEvents(t, catalog, usages, rateLimits)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limits?range=day", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp RateLimitsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	var secondary *RateLimitWindowEstimate
+	for i := range resp.Estimates {
+		if resp.Estimates[i].Scope == "secondary" && resp.Estimates[i].ResetAt == 1_782_500_000 {
+			secondary = &resp.Estimates[i]
+			break
+		}
+	}
+	if secondary == nil {
+		t.Fatalf("secondary estimate missing: %+v", resp.Estimates)
+	}
+	if secondary.Events != 3 || secondary.Pairs != 2 || secondary.Observations != 3 {
+		t.Fatalf("secondary estimate used wrong sample set: %+v", *secondary)
+	}
+	if !secondary.Feasible || secondary.Status != "estimated" || secondary.BestLimit <= 0 {
+		t.Fatalf("secondary estimate not feasible: %+v", *secondary)
+	}
+	if secondary.TotalVisibleCost <= 0 {
+		t.Fatalf("secondary visible cost = %f", secondary.TotalVisibleCost)
+	}
+}
+
 func TestModelsEndpointAndValidation(t *testing.T) {
 	handler := testHandler(t)
 
@@ -588,7 +639,7 @@ func testRateLimit(ts, plan string, allowed, reached bool, primaryUsed, primaryW
 		Schema:                     event.SchemaVersion,
 		EventType:                  event.RateLimitsEventType,
 		Timestamp:                  ts,
-		Source:                     "codex",
+		Source:                     "mitmproxy",
 		Transport:                  "https-json",
 		Host:                       "api.openai.com",
 		Path:                       "/v1/responses",

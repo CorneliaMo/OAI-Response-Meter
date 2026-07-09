@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"path"
@@ -143,12 +144,13 @@ type HeatmapDay struct {
 }
 
 type RateLimitsResponse struct {
-	Range  string           `json:"range"`
-	Bucket string           `json:"bucket"`
-	Items  []RateLimitItem  `json:"items"`
-	Points []RateLimitPoint `json:"points"`
-	Limit  int              `json:"limit"`
-	Offset int              `json:"offset"`
+	Range     string                    `json:"range"`
+	Bucket    string                    `json:"bucket"`
+	Items     []RateLimitItem           `json:"items"`
+	Points    []RateLimitPoint          `json:"points"`
+	Estimates []RateLimitWindowEstimate `json:"estimates"`
+	Limit     int                       `json:"limit"`
+	Offset    int                       `json:"offset"`
 }
 
 type RateLimitItem struct {
@@ -175,6 +177,28 @@ type RateLimitPoint struct {
 	PrimaryUsedPercent   int64  `json:"primary_used_percent"`
 	SecondaryUsedPercent int64  `json:"secondary_used_percent"`
 	Events               int64  `json:"events"`
+}
+
+type RateLimitWindowEstimate struct {
+	Scope              string  `json:"scope"`
+	ResetAt            int64   `json:"reset_at"`
+	ResetAtTime        string  `json:"reset_at_time"`
+	WindowMinutes      int64   `json:"window_minutes"`
+	Events             int     `json:"events"`
+	Pairs              int     `json:"pairs"`
+	SkippedPairs       int     `json:"skipped_pairs"`
+	Observations       int     `json:"observations"`
+	TotalVisibleCost   float64 `json:"total_visible_cost"`
+	Feasible           bool    `json:"feasible"`
+	MinimumMargin      float64 `json:"minimum_margin"`
+	LimitLow           float64 `json:"limit_low"`
+	LimitHigh          float64 `json:"limit_high"`
+	BestLimit          float64 `json:"best_limit"`
+	BestInitialUsed    float64 `json:"best_initial_used"`
+	BestInitialPercent float64 `json:"best_initial_percent"`
+	BestScore          float64 `json:"best_score"`
+	Status             string  `json:"status"`
+	Message            string  `json:"message"`
 }
 
 type errorResponse struct {
@@ -418,7 +442,7 @@ func (s apiServer) handleRateLimits(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset)
+	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset, s.pricing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1058,7 +1082,7 @@ order by ts asc
 	return resp, nil
 }
 
-func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int) (RateLimitsResponse, error) {
+func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, catalog *pricing.Catalog) (RateLimitsResponse, error) {
 	pointsQuery := `
 select
   ts,
@@ -1163,7 +1187,502 @@ limit ? offset ?
 	if err := itemRows.Err(); err != nil {
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit items: %w", err)
 	}
+	estimates, err := queryRateLimitWindowEstimates(ctx, db, window, catalog)
+	if err != nil {
+		return RateLimitsResponse{}, err
+	}
+	resp.Estimates = estimates
 	return resp, nil
+}
+
+type rateLimitWindowRef struct {
+	scope         string
+	resetAt       int64
+	windowMinutes int64
+	events        int
+}
+
+type rateLimitEstimateEvent struct {
+	id                   int64
+	ts                   string
+	source               string
+	transport            string
+	host                 string
+	path                 string
+	primaryUsedPercent   int
+	secondaryUsedPercent int
+}
+
+type windowObservation struct {
+	cumulativeCost float64
+	usedPercent    int
+}
+
+type windowEstimateResult struct {
+	observations       int
+	totalVisibleCost   float64
+	feasible           bool
+	minimumMargin      float64
+	limitLow           float64
+	limitHigh          float64
+	bestLimit          float64
+	bestInitialUsed    float64
+	bestInitialPercent float64
+	bestScore          float64
+	status             string
+	message            string
+}
+
+func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) ([]RateLimitWindowEstimate, error) {
+	refs, err := queryRateLimitWindowRefs(ctx, db, window)
+	if err != nil {
+		return nil, err
+	}
+	estimates := make([]RateLimitWindowEstimate, 0, len(refs))
+	for _, ref := range refs {
+		result, pairs, skipped, err := estimateRateLimitWindow(ctx, db, ref, catalog)
+		if err != nil {
+			return nil, err
+		}
+		estimate := RateLimitWindowEstimate{
+			Scope:              ref.scope,
+			ResetAt:            ref.resetAt,
+			ResetAtTime:        unixTimeString(ref.resetAt),
+			WindowMinutes:      ref.windowMinutes,
+			Events:             ref.events,
+			Pairs:              pairs,
+			SkippedPairs:       skipped,
+			Observations:       result.observations,
+			TotalVisibleCost:   apiFloat(result.totalVisibleCost),
+			Feasible:           result.feasible,
+			MinimumMargin:      apiFloat(result.minimumMargin),
+			LimitLow:           apiFloat(result.limitLow),
+			LimitHigh:          apiFloat(result.limitHigh),
+			BestLimit:          apiFloat(result.bestLimit),
+			BestInitialUsed:    apiFloat(result.bestInitialUsed),
+			BestInitialPercent: apiFloat(result.bestInitialPercent),
+			BestScore:          apiFloat(result.bestScore),
+			Status:             result.status,
+			Message:            result.message,
+		}
+		estimates = append(estimates, estimate)
+	}
+	return estimates, nil
+}
+
+func apiFloat(value float64) float64 {
+	if !isFiniteFloat(value) {
+		return 0
+	}
+	return value
+}
+
+func queryRateLimitWindowRefs(ctx context.Context, db *sql.DB, window queryWindow) ([]rateLimitWindowRef, error) {
+	query := `
+select scope, reset_at, max(window_minutes), count(*)
+from (
+  select 'primary' as scope, primary_reset_at as reset_at, primary_window_minutes as window_minutes, ts
+  from codex_rate_limit_events
+  where ts >= ? and primary_reset_at > 0
+  union all
+  select 'secondary' as scope, secondary_reset_at as reset_at, secondary_window_minutes as window_minutes, ts
+  from codex_rate_limit_events
+  where ts >= ? and secondary_reset_at > 0
+) windows
+where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339), window.cutoff.Format(time.RFC3339), window.cutoff.Format(time.RFC3339)}
+	if window.end != nil {
+		query += " and ts < ?"
+		args = append(args, window.end.Format(time.RFC3339))
+	}
+	query += `
+group by scope, reset_at
+order by reset_at desc, scope asc
+`
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query rate limit estimate windows: %w", err)
+	}
+	defer rows.Close()
+
+	var refs []rateLimitWindowRef
+	for rows.Next() {
+		var ref rateLimitWindowRef
+		if err := rows.Scan(&ref.scope, &ref.resetAt, &ref.windowMinutes, &ref.events); err != nil {
+			return nil, fmt.Errorf("scan rate limit estimate window: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rate limit estimate windows: %w", err)
+	}
+	return refs, nil
+}
+
+func estimateRateLimitWindow(ctx context.Context, db *sql.DB, ref rateLimitWindowRef, catalog *pricing.Catalog) (windowEstimateResult, int, int, error) {
+	if catalog == nil {
+		return windowEstimateResult{status: "pricing_disabled", message: "prices.json is not loaded."}, 0, 0, nil
+	}
+	events, err := queryRateLimitWindowEvents(ctx, db, ref)
+	if err != nil {
+		return windowEstimateResult{}, 0, 0, err
+	}
+	if len(events) < 2 {
+		return windowEstimateResult{observations: len(events), status: "insufficient_data", message: "Not enough rate limit events in this reset window."}, 0, 0, nil
+	}
+
+	observations := []windowObservation{{cumulativeCost: 0, usedPercent: rateLimitPercentForScope(events[0], ref.scope)}}
+	var cumulativeCost float64
+	var skipped int
+	pairs := len(events) - 1
+	for i := 1; i < len(events); i++ {
+		before := events[i-1]
+		after := events[i]
+		cost, priced, err := usageCostBetweenRateLimitEvents(ctx, db, before, after, catalog)
+		if err != nil {
+			return windowEstimateResult{}, 0, 0, err
+		}
+		if !priced {
+			skipped++
+			continue
+		}
+		cumulativeCost += cost
+		observations = append(observations, windowObservation{
+			cumulativeCost: cumulativeCost,
+			usedPercent:    rateLimitPercentForScope(after, ref.scope),
+		})
+	}
+
+	result := estimateWindowLimit(observations, cumulativeCost)
+	if skipped > 0 && result.status == "estimated" {
+		result.status = "partial"
+		result.message = fmt.Sprintf("%d pair(s) skipped because usage cost could not be priced.", skipped)
+	} else if skipped > 0 && result.message == "" {
+		result.message = fmt.Sprintf("%d pair(s) skipped because usage cost could not be priced.", skipped)
+	}
+	return result, pairs, skipped, nil
+}
+
+func queryRateLimitWindowEvents(ctx context.Context, db *sql.DB, ref rateLimitWindowRef) ([]rateLimitEstimateEvent, error) {
+	resetColumn := "primary_reset_at"
+	if ref.scope == "secondary" {
+		resetColumn = "secondary_reset_at"
+	}
+	query := fmt.Sprintf(`
+select
+  id,
+  ts,
+  source,
+  transport,
+  host,
+  path,
+  primary_used_percent,
+  secondary_used_percent
+from codex_rate_limit_events
+where %s = ? and %s > 0
+order by julianday(ts) asc, id asc
+`, resetColumn, resetColumn)
+	rows, err := db.QueryContext(ctx, query, ref.resetAt)
+	if err != nil {
+		return nil, fmt.Errorf("query %s rate limit estimate events: %w", ref.scope, err)
+	}
+	defer rows.Close()
+
+	var events []rateLimitEstimateEvent
+	for rows.Next() {
+		var event rateLimitEstimateEvent
+		if err := rows.Scan(
+			&event.id,
+			&event.ts,
+			&event.source,
+			&event.transport,
+			&event.host,
+			&event.path,
+			&event.primaryUsedPercent,
+			&event.secondaryUsedPercent,
+		); err != nil {
+			return nil, fmt.Errorf("scan %s rate limit estimate event: %w", ref.scope, err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s rate limit estimate events: %w", ref.scope, err)
+	}
+	return events, nil
+}
+
+func usageCostBetweenRateLimitEvents(ctx context.Context, db *sql.DB, before, after rateLimitEstimateEvent, catalog *pricing.Catalog) (float64, bool, error) {
+	rows, err := db.QueryContext(ctx, `
+select
+  coalesce(model, ''),
+  input_tokens,
+  output_tokens,
+  cached_tokens,
+  total_tokens
+from usage_events
+where julianday(ts) > julianday(?)
+  and julianday(ts) < julianday(?)
+  and source = ?
+  and transport = ?
+  and host = ?
+  and path = ?
+order by julianday(ts) asc, id asc
+`, before.ts, after.ts, before.source, before.transport, before.host, before.path)
+	if err != nil {
+		return 0, false, fmt.Errorf("query usage cost between rate limit events: %w", err)
+	}
+	defer rows.Close()
+
+	var total float64
+	for rows.Next() {
+		var model string
+		var input, output, cached, totalTokens int64
+		if err := rows.Scan(&model, &input, &output, &cached, &totalTokens); err != nil {
+			return 0, false, fmt.Errorf("scan usage cost between rate limit events: %w", err)
+		}
+		cost := estimateCost(catalog, model, input, output, cached, totalTokens)
+		if cost.Status != "priced" {
+			return 0, false, nil
+		}
+		total += cost.EstimatedCost
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, fmt.Errorf("iterate usage cost between rate limit events: %w", err)
+	}
+	return total, true, nil
+}
+
+func rateLimitPercentForScope(event rateLimitEstimateEvent, scope string) int {
+	if scope == "secondary" {
+		return event.secondaryUsedPercent
+	}
+	return event.primaryUsedPercent
+}
+
+func estimateWindowLimit(observations []windowObservation, totalVisibleCost float64) windowEstimateResult {
+	if len(observations) < 2 {
+		return windowEstimateResult{
+			observations:     len(observations),
+			totalVisibleCost: totalVisibleCost,
+			status:           "insufficient_data",
+			message:          "Not enough priced observations.",
+		}
+	}
+
+	margin, ok := findMinimumPercentMargin(observations, true, 10.0, 1e-4)
+	if !ok {
+		return windowEstimateResult{
+			observations:     len(observations),
+			totalVisibleCost: totalVisibleCost,
+			status:           "infeasible",
+			message:          "No feasible limit found within the maximum percent margin.",
+		}
+	}
+	low, high, ok := feasibleLimitInterval(observations, margin, true)
+	if !ok {
+		return windowEstimateResult{
+			observations:     len(observations),
+			totalVisibleCost: totalVisibleCost,
+			minimumMargin:    margin,
+			status:           "infeasible",
+			message:          "No feasible limit found for the selected margin.",
+		}
+	}
+	result := windowEstimateResult{
+		observations:     len(observations),
+		totalVisibleCost: totalVisibleCost,
+		feasible:         true,
+		minimumMargin:    margin,
+		limitLow:         low,
+		limitHigh:        high,
+		status:           "estimated",
+	}
+	if math.IsInf(high, 1) {
+		result.status = "unbounded"
+		result.message = "Feasible interval is unbounded above; more percentage changes are needed."
+		return result
+	}
+	if low < 1e-12 {
+		low = 1e-12
+	}
+	bestLimit, bestInitialUsed, bestScore, ok := bestLimitInInterval(observations, low, high, margin, true)
+	if !ok {
+		result.status = "infeasible"
+		result.message = "Could not score the feasible interval."
+		return result
+	}
+	result.bestLimit = bestLimit
+	result.bestInitialUsed = bestInitialUsed
+	result.bestScore = bestScore
+	if bestLimit > 0 {
+		result.bestInitialPercent = 100 * bestInitialUsed / bestLimit
+	}
+	return result
+}
+
+func fuzzyPercentInterval(percent int, margin float64) (float64, float64) {
+	low := math.Max(0, float64(percent)-margin)
+	high := math.Min(100, float64(percent)+margin)
+	return low / 100, high / 100
+}
+
+func feasibleBInterval(observations []windowObservation, limit, margin float64, requireNonnegativeInitial bool) (float64, float64, bool) {
+	bLow := math.Inf(-1)
+	if requireNonnegativeInitial {
+		bLow = 0
+	}
+	bHigh := math.Inf(1)
+	for _, obs := range observations {
+		lowRatio, highRatio := fuzzyPercentInterval(obs.usedPercent, margin)
+		bLow = math.Max(bLow, limit*lowRatio-obs.cumulativeCost)
+		bHigh = math.Min(bHigh, limit*highRatio-obs.cumulativeCost)
+	}
+	return bLow, bHigh, bLow <= bHigh
+}
+
+func feasibleLimitInterval(observations []windowObservation, margin float64, requireNonnegativeInitial bool) (float64, float64, bool) {
+	if len(observations) == 0 {
+		return 0, 0, false
+	}
+	type constraint struct {
+		a float64
+		d float64
+	}
+	lowerConstraints := make([]constraint, 0, len(observations)+1)
+	upperConstraints := make([]constraint, 0, len(observations))
+	for _, obs := range observations {
+		lowRatio, highRatio := fuzzyPercentInterval(obs.usedPercent, margin)
+		lowerConstraints = append(lowerConstraints, constraint{a: lowRatio, d: -obs.cumulativeCost})
+		upperConstraints = append(upperConstraints, constraint{a: highRatio, d: -obs.cumulativeCost})
+	}
+	if requireNonnegativeInitial {
+		lowerConstraints = append(lowerConstraints, constraint{a: 0, d: 0})
+	}
+
+	limitLow := 0.0
+	limitHigh := math.Inf(1)
+	for _, lower := range lowerConstraints {
+		for _, upper := range upperConstraints {
+			coef := lower.a - upper.a
+			rhs := upper.d - lower.d
+			if math.Abs(coef) < 1e-18 {
+				if rhs < 0 {
+					return 0, 0, false
+				}
+				continue
+			}
+			bound := rhs / coef
+			if coef > 0 {
+				limitHigh = math.Min(limitHigh, bound)
+			} else {
+				limitLow = math.Max(limitLow, bound)
+			}
+		}
+	}
+	limitLow = math.Max(limitLow, 0)
+	return limitLow, limitHigh, limitLow <= limitHigh
+}
+
+func findMinimumPercentMargin(observations []windowObservation, requireNonnegativeInitial bool, maxMargin, precision float64) (float64, bool) {
+	if _, _, ok := feasibleLimitInterval(observations, maxMargin, requireNonnegativeInitial); !ok {
+		return 0, false
+	}
+	left := 0.0
+	right := maxMargin
+	for right-left > precision {
+		mid := (left + right) / 2
+		if _, _, ok := feasibleLimitInterval(observations, mid, requireNonnegativeInitial); ok {
+			right = mid
+		} else {
+			left = mid
+		}
+	}
+	return right, true
+}
+
+func scoreLimit(observations []windowObservation, limit, margin float64, requireNonnegativeInitial bool) (float64, float64, bool) {
+	bLow, bHigh, ok := feasibleBInterval(observations, limit, margin, requireNonnegativeInitial)
+	if !ok {
+		return 0, 0, false
+	}
+	var targetSum float64
+	for _, obs := range observations {
+		targetSum += limit*float64(obs.usedPercent)/100 - obs.cumulativeCost
+	}
+	bStar := targetSum / float64(len(observations))
+	bStar = math.Min(math.Max(bStar, bLow), bHigh)
+
+	var squaredError float64
+	for _, obs := range observations {
+		truePercent := 100 * (bStar + obs.cumulativeCost) / limit
+		diff := truePercent - float64(obs.usedPercent)
+		squaredError += diff * diff
+	}
+	return squaredError / float64(len(observations)), bStar, true
+}
+
+func bestLimitInInterval(observations []windowObservation, low, high, margin float64, requireNonnegativeInitial bool) (float64, float64, float64, bool) {
+	if !isFiniteFloat(low) || !isFiniteFloat(high) {
+		return 0, 0, 0, false
+	}
+	if high <= low {
+		score, b, ok := scoreLimit(observations, low, margin, requireNonnegativeInitial)
+		return low, b, score, ok
+	}
+	phi := (1 + math.Sqrt(5)) / 2
+	c := high - (high-low)/phi
+	d := low + (high-low)/phi
+	scoreC, bC, okC := scoreLimit(observations, c, margin, requireNonnegativeInitial)
+	scoreD, bD, okD := scoreLimit(observations, d, margin, requireNonnegativeInitial)
+	if !okC {
+		scoreC = math.Inf(1)
+	}
+	if !okD {
+		scoreD = math.Inf(1)
+	}
+	for range 200 {
+		if scoreC < scoreD {
+			high = d
+			d = c
+			scoreD = scoreC
+			bD = bC
+			c = high - (high-low)/phi
+			scoreC, bC, okC = scoreLimit(observations, c, margin, requireNonnegativeInitial)
+			if !okC {
+				scoreC = math.Inf(1)
+			}
+		} else {
+			low = c
+			c = d
+			scoreC = scoreD
+			bC = bD
+			d = low + (high-low)/phi
+			scoreD, bD, okD = scoreLimit(observations, d, margin, requireNonnegativeInitial)
+			if !okD {
+				scoreD = math.Inf(1)
+			}
+		}
+	}
+	bestLimit := c
+	bestInitial := bC
+	bestScore := scoreC
+	if scoreD < bestScore {
+		bestLimit = d
+		bestInitial = bD
+		bestScore = scoreD
+	}
+	mid := (low + high) / 2
+	if scoreMid, bMid, ok := scoreLimit(observations, mid, margin, requireNonnegativeInitial); ok && scoreMid < bestScore {
+		bestLimit = mid
+		bestInitial = bMid
+		bestScore = scoreMid
+	}
+	return bestLimit, bestInitial, bestScore, isFiniteFloat(bestScore)
+}
+
+func isFiniteFloat(value float64) bool {
+	return !math.IsInf(value, 0) && !math.IsNaN(value)
 }
 
 func unixTimeString(value int64) string {
