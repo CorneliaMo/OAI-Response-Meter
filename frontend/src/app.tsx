@@ -723,6 +723,8 @@ function LimitsPanel(props: {
   t: (typeof messages)[Locale];
 }) {
   const { data, limitsOffset, locale, onOffsetChange, t } = props;
+  const primaryEstimates = data.estimates.filter((estimate) => estimate.scope === "primary");
+  const secondaryEstimates = data.estimates.filter((estimate) => estimate.scope === "secondary");
 
   return (
     <>
@@ -772,60 +774,8 @@ function LimitsPanel(props: {
         }}
       />
 
-      <section className="panel">
-        <div className="panelHeader">
-          <div>
-            <p className="panelEyebrow">{t.limits.estimatesEyebrow}</p>
-            <h3>{t.limits.estimatesTitle}</h3>
-          </div>
-          <p className="microcopy">{t.limits.estimatesHint}</p>
-        </div>
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t.limits.window}</th>
-                <th>{t.limits.resetAt}</th>
-                <th>{t.limits.samples}</th>
-                <th>{t.limits.estimatedLimit}</th>
-                <th>{t.limits.bounds}</th>
-                <th>{t.limits.fit}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.estimates.map((estimate) => (
-                <tr key={`${estimate.scope}-${estimate.reset_at}`}>
-                  <td>
-                    <strong>{estimate.scope === "primary" ? t.limits.primary : t.limits.secondary}</strong>
-                    <span>{t.limits.windowMinutes(estimate.window_minutes)}</span>
-                  </td>
-                  <td>
-                    <strong>{formatTime(estimate.reset_at_time, locale, t)}</strong>
-                    <span>{estimate.status}</span>
-                  </td>
-                  <td>
-                    <strong>{t.limits.sampleCounts(estimate.observations, estimate.pairs)}</strong>
-                    <span>{estimate.skipped_pairs > 0 ? t.limits.skippedPairs(estimate.skipped_pairs) : t.limits.noSkippedPairs}</span>
-                  </td>
-                  <td>
-                    <strong>{estimate.feasible && estimate.best_limit > 0 ? formatMoneyValue(estimate.best_limit, "USD", locale) : t.tables.none}</strong>
-                    <span>{t.limits.visibleCost(formatMoneyValue(estimate.total_visible_cost, "USD", locale))}</span>
-                  </td>
-                  <td>
-                    <strong>{formatEstimateBounds(estimate, locale)}</strong>
-                    <span>{t.limits.margin(formatPercent(estimate.minimum_margin / 100))}</span>
-                  </td>
-                  <td>
-                    <strong>{estimate.feasible ? t.limits.mse(formatDecimal(estimate.best_score, locale)) : t.limits.notEstimated}</strong>
-                    <span>{estimate.message || t.limits.initialUsed(formatMoneyValue(estimate.best_initial_used, "USD", locale), formatPercent(estimate.best_initial_percent / 100))}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {data.estimates.length === 0 ? <p className="emptyLine">{t.limits.noEstimates}</p> : null}
-        </div>
-      </section>
+      <WindowEstimatePanel estimates={primaryEstimates} locale={locale} scope="primary" t={t} />
+      <WindowEstimatePanel estimates={secondaryEstimates} locale={locale} scope="secondary" t={t} />
 
       <section className="panel">
         <div className="panelHeader">
@@ -891,6 +841,73 @@ function LimitsPanel(props: {
         </div>
       </section>
     </>
+  );
+}
+
+function WindowEstimatePanel(props: {
+  estimates: RateLimitWindowEstimate[];
+  locale: Locale;
+  scope: "primary" | "secondary";
+  t: (typeof messages)[Locale];
+}) {
+  const { estimates, locale, scope, t } = props;
+  const scopeLabel = scope === "primary" ? t.limits.primary : t.limits.secondary;
+
+  return (
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="panelEyebrow">{t.limits.estimatesEyebrow}</p>
+          <h3>{scope === "primary" ? t.limits.primaryEstimatesTitle : t.limits.secondaryEstimatesTitle}</h3>
+        </div>
+        <p className="microcopy">{t.limits.estimatesHint}</p>
+      </div>
+      <div className="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>{t.limits.window}</th>
+              <th>{t.limits.resetAt}</th>
+              <th>{t.limits.samples}</th>
+              <th>{t.limits.estimatedLimit}</th>
+              <th>{t.limits.bounds}</th>
+              <th>{t.limits.fit}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {estimates.map((estimate) => (
+              <tr key={`${estimate.scope}-${estimate.reset_at}`}>
+                <td>
+                  <strong>{scopeLabel}</strong>
+                  <span>{t.limits.windowMinutes(estimate.window_minutes)}</span>
+                </td>
+                <td>
+                  <strong>{formatTime(estimate.reset_at_time, locale, t)}</strong>
+                  <span>{estimate.status}</span>
+                </td>
+                <td>
+                  <strong>{t.limits.sampleCounts(estimate.observations, estimate.pairs)}</strong>
+                  <span>{estimate.skipped_pairs > 0 ? t.limits.skippedPairs(estimate.skipped_pairs) : t.limits.noSkippedPairs}</span>
+                </td>
+                <td>
+                  <strong>{estimate.feasible && estimate.best_limit > 0 ? formatMoneyValue(estimate.best_limit, "USD", locale) : t.tables.none}</strong>
+                  <span>{t.limits.visibleCost(formatMoneyValue(estimate.total_visible_cost, "USD", locale))}</span>
+                </td>
+                <td>
+                  <strong>{formatEstimateBounds(estimate, locale)}</strong>
+                  <span>{t.limits.margin(formatPercent(estimate.minimum_margin / 100))}</span>
+                </td>
+                <td>
+                  <strong>{estimate.feasible ? t.limits.mse(formatDecimal(estimate.best_score, locale)) : t.limits.notEstimated}</strong>
+                  <span>{estimate.message || t.limits.initialUsed(formatMoneyValue(estimate.best_initial_used, "USD", locale), formatPercent(estimate.best_initial_percent / 100))}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {estimates.length === 0 ? <p className="emptyLine">{t.limits.noScopeEstimates(scopeLabel)}</p> : null}
+      </div>
+    </section>
   );
 }
 
