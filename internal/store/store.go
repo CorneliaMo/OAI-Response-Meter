@@ -300,6 +300,28 @@ func (s *Store) init(ctx context.Context) error {
 		`create index if not exists idx_codex_rate_limit_events_ts on codex_rate_limit_events(ts)`,
 		`create index if not exists idx_codex_rate_limit_events_primary_reset_at on codex_rate_limit_events(primary_reset_at)`,
 		`create index if not exists idx_codex_rate_limit_events_secondary_reset_at on codex_rate_limit_events(secondary_reset_at)`,
+		`create table if not exists rate_limit_window_estimate_cache (
+  scope text not null,
+  reset_at integer not null,
+  price_signature text not null,
+  pairs integer not null default 0,
+  skipped_pairs integer not null default 0,
+  observations integer not null default 0,
+  total_visible_cost real not null default 0,
+  feasible integer not null default 0,
+  minimum_margin real not null default 0,
+  limit_low real not null default 0,
+  limit_high real not null default 0,
+  best_limit real not null default 0,
+  best_initial_used real not null default 0,
+  best_initial_percent real not null default 0,
+  best_score real not null default 0,
+  status text not null default '',
+  message text not null default '',
+  created_at text not null default current_timestamp,
+  updated_at text not null default current_timestamp,
+  primary key (scope, reset_at, price_signature)
+)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

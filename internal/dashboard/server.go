@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -284,6 +285,10 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 		db.Close()
 		return nil, nil, fmt.Errorf("ping sqlite: %w", err)
 	}
+	if err := initRateLimitEstimateCache(context.Background(), db); err != nil {
+		db.Close()
+		return nil, nil, err
+	}
 
 	staticFS, err := fs.Sub(embeddedStatic, "static")
 	if err != nil {
@@ -308,6 +313,35 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 	mux.HandleFunc("/api/", server.handleAPINotFound)
 	mux.HandleFunc("/", server.handleStatic)
 	return mux, db, nil
+}
+
+func initRateLimitEstimateCache(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `create table if not exists rate_limit_window_estimate_cache (
+  scope text not null,
+  reset_at integer not null,
+  price_signature text not null,
+  pairs integer not null default 0,
+  skipped_pairs integer not null default 0,
+  observations integer not null default 0,
+  total_visible_cost real not null default 0,
+  feasible integer not null default 0,
+  minimum_margin real not null default 0,
+  limit_low real not null default 0,
+  limit_high real not null default 0,
+  best_limit real not null default 0,
+  best_initial_used real not null default 0,
+  best_initial_percent real not null default 0,
+  best_score real not null default 0,
+  status text not null default '',
+  message text not null default '',
+  created_at text not null default current_timestamp,
+  updated_at text not null default current_timestamp,
+  primary key (scope, reset_at, price_signature)
+)`)
+	if err != nil {
+		return fmt.Errorf("init rate limit estimate cache: %w", err)
+	}
+	return nil
 }
 
 type apiServer struct {
@@ -442,7 +476,7 @@ func (s apiServer) handleRateLimits(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset, s.pricing)
+	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset, s.pricing, s.now().UTC())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1082,7 +1116,7 @@ order by ts asc
 	return resp, nil
 }
 
-func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, catalog *pricing.Catalog) (RateLimitsResponse, error) {
+func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, catalog *pricing.Catalog, now time.Time) (RateLimitsResponse, error) {
 	pointsQuery := `
 select
   ts,
@@ -1187,7 +1221,7 @@ limit ? offset ?
 	if err := itemRows.Err(); err != nil {
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit items: %w", err)
 	}
-	estimates, err := queryRateLimitWindowEstimates(ctx, db, window, catalog)
+	estimates, err := queryRateLimitWindowEstimates(ctx, db, window, catalog, now)
 	if err != nil {
 		return RateLimitsResponse{}, err
 	}
@@ -1233,16 +1267,28 @@ type windowEstimateResult struct {
 	message            string
 }
 
-func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) ([]RateLimitWindowEstimate, error) {
+func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog, now time.Time) ([]RateLimitWindowEstimate, error) {
 	refs, err := queryRateLimitWindowRefs(ctx, db, window)
 	if err != nil {
 		return nil, err
 	}
+	priceSignature := rateLimitEstimatePriceSignature(catalog)
 	estimates := make([]RateLimitWindowEstimate, 0, len(refs))
 	for _, ref := range refs {
-		result, pairs, skipped, err := estimateRateLimitWindow(ctx, db, ref, catalog)
+		result, pairs, skipped, ok, err := readRateLimitEstimateCache(ctx, db, ref, priceSignature)
 		if err != nil {
 			return nil, err
+		}
+		if !ok {
+			result, pairs, skipped, err = estimateRateLimitWindow(ctx, db, ref, catalog)
+			if err != nil {
+				return nil, err
+			}
+			if shouldCacheRateLimitWindow(ref, now) {
+				if err := writeRateLimitEstimateCache(ctx, db, ref, priceSignature, result, pairs, skipped); err != nil {
+					return nil, err
+				}
+			}
 		}
 		estimate := RateLimitWindowEstimate{
 			Scope:              ref.scope,
@@ -1268,6 +1314,146 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 		estimates = append(estimates, estimate)
 	}
 	return estimates, nil
+}
+
+func readRateLimitEstimateCache(ctx context.Context, db *sql.DB, ref rateLimitWindowRef, priceSignature string) (windowEstimateResult, int, int, bool, error) {
+	var result windowEstimateResult
+	var pairs, skipped, feasibleInt int
+	err := db.QueryRowContext(ctx, `
+select
+  pairs,
+  skipped_pairs,
+  observations,
+  total_visible_cost,
+  feasible,
+  minimum_margin,
+  limit_low,
+  limit_high,
+  best_limit,
+  best_initial_used,
+  best_initial_percent,
+  best_score,
+  status,
+  message
+from rate_limit_window_estimate_cache
+where scope = ? and reset_at = ? and price_signature = ?
+`, ref.scope, ref.resetAt, priceSignature).Scan(
+		&pairs,
+		&skipped,
+		&result.observations,
+		&result.totalVisibleCost,
+		&feasibleInt,
+		&result.minimumMargin,
+		&result.limitLow,
+		&result.limitHigh,
+		&result.bestLimit,
+		&result.bestInitialUsed,
+		&result.bestInitialPercent,
+		&result.bestScore,
+		&result.status,
+		&result.message,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return windowEstimateResult{}, 0, 0, false, nil
+	}
+	if err != nil {
+		return windowEstimateResult{}, 0, 0, false, fmt.Errorf("read rate limit estimate cache: %w", err)
+	}
+	result.feasible = feasibleInt != 0
+	return result, pairs, skipped, true, nil
+}
+
+func writeRateLimitEstimateCache(ctx context.Context, db *sql.DB, ref rateLimitWindowRef, priceSignature string, result windowEstimateResult, pairs, skipped int) error {
+	feasibleInt := 0
+	if result.feasible {
+		feasibleInt = 1
+	}
+	_, err := db.ExecContext(ctx, `
+insert into rate_limit_window_estimate_cache (
+  scope,
+  reset_at,
+  price_signature,
+  pairs,
+  skipped_pairs,
+  observations,
+  total_visible_cost,
+  feasible,
+  minimum_margin,
+  limit_low,
+  limit_high,
+  best_limit,
+  best_initial_used,
+  best_initial_percent,
+  best_score,
+  status,
+  message,
+  updated_at
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+on conflict(scope, reset_at, price_signature) do update set
+  pairs = excluded.pairs,
+  skipped_pairs = excluded.skipped_pairs,
+  observations = excluded.observations,
+  total_visible_cost = excluded.total_visible_cost,
+  feasible = excluded.feasible,
+  minimum_margin = excluded.minimum_margin,
+  limit_low = excluded.limit_low,
+  limit_high = excluded.limit_high,
+  best_limit = excluded.best_limit,
+  best_initial_used = excluded.best_initial_used,
+  best_initial_percent = excluded.best_initial_percent,
+  best_score = excluded.best_score,
+  status = excluded.status,
+  message = excluded.message,
+  updated_at = current_timestamp
+`,
+		ref.scope,
+		ref.resetAt,
+		priceSignature,
+		pairs,
+		skipped,
+		result.observations,
+		apiFloat(result.totalVisibleCost),
+		feasibleInt,
+		apiFloat(result.minimumMargin),
+		apiFloat(result.limitLow),
+		apiFloat(result.limitHigh),
+		apiFloat(result.bestLimit),
+		apiFloat(result.bestInitialUsed),
+		apiFloat(result.bestInitialPercent),
+		apiFloat(result.bestScore),
+		result.status,
+		result.message,
+	)
+	if err != nil {
+		return fmt.Errorf("write rate limit estimate cache: %w", err)
+	}
+	return nil
+}
+
+func shouldCacheRateLimitWindow(ref rateLimitWindowRef, now time.Time) bool {
+	if ref.resetAt <= 0 {
+		return false
+	}
+	return time.Unix(ref.resetAt, 0).UTC().Add(time.Hour).Before(now) || time.Unix(ref.resetAt, 0).UTC().Add(time.Hour).Equal(now)
+}
+
+func rateLimitEstimatePriceSignature(catalog *pricing.Catalog) string {
+	if catalog == nil {
+		return "pricing-disabled"
+	}
+	models := make([]string, 0, len(catalog.Models))
+	for model := range catalog.Models {
+		models = append(models, model)
+	}
+	slices.Sort(models)
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "currency=%s\nunit=%s\n", catalog.Currency, catalog.Unit)
+	for _, model := range models {
+		rate := catalog.Models[model]
+		fmt.Fprintf(&builder, "%s|%.12g|%.12g|%.12g\n", model, rate.Input, rate.CachedInput, rate.Output)
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func apiFloat(value float64) float64 {

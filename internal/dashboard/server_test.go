@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -416,6 +417,79 @@ func TestRateLimitWindowEstimatesUseScopeResetWindow(t *testing.T) {
 	}
 }
 
+func TestRateLimitWindowEstimateCachePersistsExpiredWindow(t *testing.T) {
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 1, CachedInput: 0, Output: 1},
+		},
+	}
+	resetAt := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC).Unix()
+	usages := []event.Usage{
+		testUsage("cache_1", "", "gpt-test", "https-json", "2026-06-21T08:10:00Z", 100_000),
+		testUsage("cache_2", "", "gpt-test", "https-json", "2026-06-21T08:40:00Z", 100_000),
+	}
+	rateLimits := []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, resetAt, 50, 1440, resetAt),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, resetAt, 60, 1440, resetAt),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, resetAt, 70, 1440, resetAt),
+	}
+	handler, db := testHandlerWithAllEventsAndNow(t, catalog, usages, rateLimits, func() time.Time {
+		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	})
+
+	first := requestRateLimits(t, handler)
+	firstPrimary := findEstimate(t, first.Estimates, "primary", resetAt)
+	if firstPrimary.BestLimit <= 0 {
+		t.Fatalf("first primary estimate = %+v", firstPrimary)
+	}
+	var cached int
+	if err := db.QueryRowContext(context.Background(), `select count(*) from rate_limit_window_estimate_cache where reset_at = ?`, resetAt).Scan(&cached); err != nil {
+		t.Fatalf("query cache count error = %v", err)
+	}
+	if cached != 2 {
+		t.Fatalf("cached rows = %d, want 2", cached)
+	}
+	if _, err := db.ExecContext(context.Background(), `delete from usage_events`); err != nil {
+		t.Fatalf("delete usage_events error = %v", err)
+	}
+
+	second := requestRateLimits(t, handler)
+	secondPrimary := findEstimate(t, second.Estimates, "primary", resetAt)
+	if secondPrimary.BestLimit != firstPrimary.BestLimit || secondPrimary.Observations != firstPrimary.Observations {
+		t.Fatalf("cache was not reused: first=%+v second=%+v", firstPrimary, secondPrimary)
+	}
+}
+
+func TestRateLimitWindowEstimateCacheSkipsActiveWindow(t *testing.T) {
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 1, CachedInput: 0, Output: 1},
+		},
+	}
+	resetAt := time.Date(2026, 6, 21, 11, 30, 0, 0, time.UTC).Unix()
+	handler, db := testHandlerWithAllEventsAndNow(t, catalog, []event.Usage{
+		testUsage("active_cache_1", "", "gpt-test", "https-json", "2026-06-21T08:10:00Z", 100_000),
+	}, []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, resetAt, 50, 1440, resetAt),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, resetAt, 60, 1440, resetAt),
+	}, func() time.Time {
+		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	})
+
+	_ = requestRateLimits(t, handler)
+	var cached int
+	if err := db.QueryRowContext(context.Background(), `select count(*) from rate_limit_window_estimate_cache where reset_at = ?`, resetAt).Scan(&cached); err != nil {
+		t.Fatalf("query cache count error = %v", err)
+	}
+	if cached != 0 {
+		t.Fatalf("cached rows = %d, want 0", cached)
+	}
+}
+
 func TestModelsEndpointAndValidation(t *testing.T) {
 	handler := testHandler(t)
 
@@ -552,6 +626,32 @@ func TestStaticIndexServed(t *testing.T) {
 	}
 }
 
+func requestRateLimits(t *testing.T, handler http.Handler) RateLimitsResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limits?range=day", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp RateLimitsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return resp
+}
+
+func findEstimate(t *testing.T, estimates []RateLimitWindowEstimate, scope string, resetAt int64) RateLimitWindowEstimate {
+	t.Helper()
+	for _, estimate := range estimates {
+		if estimate.Scope == scope && estimate.ResetAt == resetAt {
+			return estimate
+		}
+	}
+	t.Fatalf("%s estimate reset_at=%d missing: %+v", scope, resetAt, estimates)
+	return RateLimitWindowEstimate{}
+}
+
 func testHandler(t *testing.T) http.Handler {
 	return testHandlerWithPricing(t, nil)
 }
@@ -567,6 +667,14 @@ func testHandlerWithPricing(t *testing.T, catalog *pricing.Catalog) http.Handler
 }
 
 func testHandlerWithAllEvents(t *testing.T, catalog *pricing.Catalog, usages []event.Usage, rateLimits []event.RateLimits) http.Handler {
+	t.Helper()
+	handler, _ := testHandlerWithAllEventsAndNow(t, catalog, usages, rateLimits, func() time.Time {
+		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	})
+	return handler
+}
+
+func testHandlerWithAllEventsAndNow(t *testing.T, catalog *pricing.Catalog, usages []event.Usage, rateLimits []event.RateLimits, now func() time.Time) (http.Handler, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.db")
@@ -584,14 +692,12 @@ func testHandlerWithAllEvents(t *testing.T, catalog *pricing.Catalog, usages []e
 		t.Fatalf("WriteRateLimitBatch() error = %v", err)
 	}
 
-	handler, db, err := newHandler(Config{DBPath: dbPath, Pricing: catalog}, func() time.Time {
-		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
-	})
+	handler, db, err := newHandler(Config{DBPath: dbPath, Pricing: catalog}, now)
 	if err != nil {
 		t.Fatalf("newHandler() error = %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return handler
+	return handler, db
 }
 
 func emptyTestHandler(t *testing.T) http.Handler {
