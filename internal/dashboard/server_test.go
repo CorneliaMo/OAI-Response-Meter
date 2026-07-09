@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -597,6 +598,124 @@ func TestPricingAppearsOnEventsAndChains(t *testing.T) {
 	}
 }
 
+func TestTieredPricingUsesPerEventCostsInAggregates(t *testing.T) {
+	catalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-tiered": {
+				Input:       2,
+				CachedInput: 0.2,
+				Output:      8,
+				Tiers: []pricing.Tier{
+					{MinInputTokens: 272001, Input: 5, CachedInput: 0.5, Output: 20},
+				},
+			},
+		},
+	}
+	usages := []event.Usage{
+		{
+			Schema:              event.SchemaVersion,
+			Timestamp:           "2026-06-21T08:00:00Z",
+			Source:              "mitmproxy",
+			Transport:           "https-json",
+			Host:                "api.openai.com",
+			Path:                "/v1/responses",
+			ResponseID:          "resp_a",
+			ChainRootResponseID: "resp_a",
+			Model:               "gpt-tiered",
+			InputTokens:         200_000,
+			OutputTokens:        100_000,
+			TotalTokens:         300_000,
+		},
+		{
+			Schema:              event.SchemaVersion,
+			Timestamp:           "2026-06-21T09:00:00Z",
+			Source:              "mitmproxy",
+			Transport:           "https-json",
+			Host:                "api.openai.com",
+			Path:                "/v1/responses",
+			ResponseID:          "resp_b",
+			ChainRootResponseID: "resp_b",
+			Model:               "gpt-tiered",
+			InputTokens:         200_000,
+			OutputTokens:        100_000,
+			TotalTokens:         300_000,
+		},
+		{
+			Schema:              event.SchemaVersion,
+			Timestamp:           "2026-06-21T10:00:00Z",
+			Source:              "mitmproxy",
+			Transport:           "https-json",
+			Host:                "api.openai.com",
+			Path:                "/v1/responses",
+			ResponseID:          "resp_c",
+			ChainRootResponseID: "resp_c",
+			Model:               "gpt-tiered",
+			InputTokens:         272_001,
+			OutputTokens:        100_000,
+			TotalTokens:         372_001,
+		},
+	}
+	handler := testHandlerWithAllEvents(t, catalog, usages, nil)
+
+	summary := requestSummary(t, handler, "/api/summary?range=day")
+	wantSummaryCost := 2*(200_000.0/1_000_000*2+100_000.0/1_000_000*8) + 272_001.0/1_000_000*5 + 100_000.0/1_000_000*20
+	if math.Abs(summary.Cost.EstimatedCost-wantSummaryCost) > 0.000001 {
+		t.Fatalf("summary cost = %f, want %f", summary.Cost.EstimatedCost, wantSummaryCost)
+	}
+
+	models := requestModels(t, handler, "/api/models?range=day")
+	if len(models.Items) != 1 {
+		t.Fatalf("models = %+v", models.Items)
+	}
+	if math.Abs(models.Items[0].Cost.EstimatedCost-wantSummaryCost) > 0.000001 {
+		t.Fatalf("model cost = %f, want %f", models.Items[0].Cost.EstimatedCost, wantSummaryCost)
+	}
+
+	chains := requestChains(t, handler, "/api/chains?range=day&limit=10")
+	if len(chains.Items) != 3 {
+		t.Fatalf("chains = %+v", chains.Items)
+	}
+	if math.Abs(chains.Items[0].Cost.EstimatedCost-(272_001.0/1_000_000*5+100_000.0/1_000_000*20)) > 0.000001 {
+		t.Fatalf("tiered chain cost = %+v", chains.Items[0])
+	}
+	if math.Abs(chains.Items[1].Cost.EstimatedCost-(200_000.0/1_000_000*2+100_000.0/1_000_000*8)) > 0.000001 {
+		t.Fatalf("base chain cost = %+v", chains.Items[1])
+	}
+	if math.Abs(chains.Items[2].Cost.EstimatedCost-(200_000.0/1_000_000*2+100_000.0/1_000_000*8)) > 0.000001 {
+		t.Fatalf("base chain cost = %+v", chains.Items[2])
+	}
+}
+
+func TestRateLimitEstimatePriceSignatureIncludesTiers(t *testing.T) {
+	baseCatalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {Input: 2, CachedInput: 0.2, Output: 8},
+		},
+	}
+	tieredCatalog := &pricing.Catalog{
+		Currency: "USD",
+		Unit:     pricing.UnitPer1MTokens,
+		Models: map[string]pricing.Rate{
+			"gpt-test": {
+				Input:       2,
+				CachedInput: 0.2,
+				Output:      8,
+				Tiers: []pricing.Tier{
+					{MinInputTokens: 272001, Input: 5, CachedInput: 0.5, Output: 20},
+				},
+			},
+		},
+	}
+
+	if rateLimitEstimatePriceSignature(baseCatalog) == rateLimitEstimatePriceSignature(tieredCatalog) {
+		t.Fatal("expected distinct signatures when pricing tiers change")
+	}
+}
+
 func TestUnknownAPIPathReturnsJSONNotFound(t *testing.T) {
 	handler := testHandler(t)
 
@@ -635,6 +754,48 @@ func requestRateLimits(t *testing.T, handler http.Handler) RateLimitsResponse {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var resp RateLimitsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return resp
+}
+
+func requestSummary(t *testing.T, handler http.Handler, path string) SummaryResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp SummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return resp
+}
+
+func requestModels(t *testing.T, handler http.Handler, path string) ModelsResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	return resp
+}
+
+func requestChains(t *testing.T, handler http.Handler, path string) ChainsResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp ChainsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}

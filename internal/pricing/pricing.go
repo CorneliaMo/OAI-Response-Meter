@@ -22,6 +22,14 @@ type Rate struct {
 	Input       float64 `json:"input"`
 	CachedInput float64 `json:"cached_input"`
 	Output      float64 `json:"output"`
+	Tiers       []Tier  `json:"tiers,omitempty"`
+}
+
+type Tier struct {
+	MinInputTokens int64   `json:"min_input_tokens"`
+	Input          float64 `json:"input"`
+	CachedInput    float64 `json:"cached_input"`
+	Output         float64 `json:"output"`
 }
 
 type Usage struct {
@@ -73,6 +81,19 @@ func (c *Catalog) Validate() error {
 		if rate.Input < 0 || rate.CachedInput < 0 || rate.Output < 0 {
 			return fmt.Errorf("prices for %q must be non-negative", model)
 		}
+		var lastMin int64
+		for i, tier := range rate.Tiers {
+			if tier.MinInputTokens <= 0 {
+				return fmt.Errorf("prices tier %d for %q must have positive min_input_tokens", i, model)
+			}
+			if tier.Input < 0 || tier.CachedInput < 0 || tier.Output < 0 {
+				return fmt.Errorf("prices tier %d for %q must be non-negative", i, model)
+			}
+			if i > 0 && tier.MinInputTokens <= lastMin {
+				return fmt.Errorf("prices tiers for %q must have strictly increasing min_input_tokens", model)
+			}
+			lastMin = tier.MinInputTokens
+		}
 	}
 	return nil
 }
@@ -91,6 +112,7 @@ func (c *Catalog) Estimate(usage Usage) Cost {
 		cost.UnpricedTokens = usage.TotalTokens
 		return cost
 	}
+	rate = rate.selectFor(usage.InputTokens)
 	billableInput := usage.InputTokens - usage.CachedTokens
 	if billableInput < 0 {
 		billableInput = 0
@@ -124,4 +146,23 @@ func Add(a, b Cost) Cost {
 		a.Status = "priced"
 	}
 	return a
+}
+
+func (r Rate) selectFor(inputTokens int64) Rate {
+	selected := Rate{
+		Input:       r.Input,
+		CachedInput: r.CachedInput,
+		Output:      r.Output,
+	}
+	for _, tier := range r.Tiers {
+		if inputTokens < tier.MinInputTokens {
+			break
+		}
+		selected = Rate{
+			Input:       tier.Input,
+			CachedInput: tier.CachedInput,
+			Output:      tier.Output,
+		}
+	}
+	return selected
 }

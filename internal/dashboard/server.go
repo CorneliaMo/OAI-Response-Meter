@@ -214,6 +214,18 @@ type EventFilters struct {
 	Sort                string
 }
 
+type usageEventRow struct {
+	Timestamp           string
+	Transport           string
+	ChainRootResponseID string
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	TotalTokens         int64
+	CachedTokens        int64
+	ReasoningTokens     int64
+}
+
 func Start(ctx context.Context, config Config) (*Server, error) {
 	handler, db, err := newHandler(config, time.Now)
 	if err != nil {
@@ -679,51 +691,23 @@ func parseEventFilters(r *http.Request) (EventFilters, error) {
 }
 
 func querySummary(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (SummaryResponse, error) {
-	query := `
-select
-  coalesce(nullif(model, ''), '(unknown)'),
-  count(*),
-  coalesce(sum(total_tokens), 0),
-  coalesce(sum(input_tokens), 0),
-  coalesce(sum(output_tokens), 0),
-  coalesce(sum(cached_tokens), 0),
-  coalesce(sum(reasoning_tokens), 0),
-  coalesce(max(ts), '')
-from usage_events
-where ts >= ?
-`
-	args := []any{window.cutoff.Format(time.RFC3339)}
-	appendUpperBound(&query, &args, window)
-	query += `
-group by coalesce(nullif(model, ''), '(unknown)')
-`
 	resp := SummaryResponse{Range: window.name}
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := queryUsageEventsInWindow(ctx, db, window)
 	if err != nil {
-		return SummaryResponse{}, fmt.Errorf("query summary: %w", err)
+		return SummaryResponse{}, err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var model string
-		var latest string
-		var requests, total, input, output, cached, reasoning int64
-		if err := rows.Scan(&model, &requests, &total, &input, &output, &cached, &reasoning, &latest); err != nil {
-			return SummaryResponse{}, fmt.Errorf("scan summary: %w", err)
+	for _, row := range rows {
+		resp.Requests++
+		resp.TotalTokens += row.TotalTokens
+		resp.InputTokens += row.InputTokens
+		resp.OutputTokens += row.OutputTokens
+		resp.CachedTokens += row.CachedTokens
+		resp.ReasoningTokens += row.ReasoningTokens
+		if row.Timestamp > resp.LatestEventTime {
+			resp.LatestEventTime = row.Timestamp
 		}
-		resp.Requests += requests
-		resp.TotalTokens += total
-		resp.InputTokens += input
-		resp.OutputTokens += output
-		resp.CachedTokens += cached
-		resp.ReasoningTokens += reasoning
-		if latest > resp.LatestEventTime {
-			resp.LatestEventTime = latest
-		}
-		resp.Cost = pricing.Add(resp.Cost, estimateCost(catalog, model, input, output, cached, total))
-	}
-	if err := rows.Err(); err != nil {
-		return SummaryResponse{}, fmt.Errorf("iterate summary: %w", err)
+		resp.Cost = pricing.Add(resp.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
 	}
 	if resp.InputTokens > 0 {
 		resp.CacheRatio = float64(resp.CachedTokens) / float64(resp.InputTokens)
@@ -813,81 +797,53 @@ func bucketStart(ts time.Time, loc *time.Location, bucket string) time.Time {
 }
 
 func queryModels(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog) (ModelsResponse, error) {
-	query := `
-select
-  coalesce(nullif(model, ''), '(unknown)'),
-  count(*),
-  coalesce(sum(total_tokens), 0),
-  coalesce(sum(input_tokens), 0),
-  coalesce(sum(output_tokens), 0),
-  coalesce(sum(cached_tokens), 0),
-  coalesce(sum(reasoning_tokens), 0)
-from usage_events
-where ts >= ?
-`
-	args := []any{window.cutoff.Format(time.RFC3339)}
-	appendUpperBound(&query, &args, window)
-	query += `
-group by coalesce(nullif(model, ''), '(unknown)')
-order by total_tokens desc, count(*) desc, 1 asc
-`
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := queryUsageEventsInWindow(ctx, db, window)
 	if err != nil {
-		return ModelsResponse{}, fmt.Errorf("query models: %w", err)
+		return ModelsResponse{}, err
 	}
-	defer rows.Close()
 
-	resp := ModelsResponse{}
-	for rows.Next() {
-		var item ModelItem
-		if err := rows.Scan(
-			&item.Model,
-			&item.Requests,
-			&item.TotalTokens,
-			&item.InputTokens,
-			&item.OutputTokens,
-			&item.CachedTokens,
-			&item.ReasoningTokens,
-		); err != nil {
-			return ModelsResponse{}, fmt.Errorf("scan models: %w", err)
+	items := map[string]*ModelItem{}
+	for _, row := range rows {
+		item := items[row.Model]
+		if item == nil {
+			item = &ModelItem{Model: row.Model}
+			items[row.Model] = item
 		}
-		item.Cost = estimateCost(catalog, item.Model, item.InputTokens, item.OutputTokens, item.CachedTokens, item.TotalTokens)
-		resp.Items = append(resp.Items, item)
+		item.Requests++
+		item.TotalTokens += row.TotalTokens
+		item.InputTokens += row.InputTokens
+		item.OutputTokens += row.OutputTokens
+		item.CachedTokens += row.CachedTokens
+		item.ReasoningTokens += row.ReasoningTokens
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
 	}
-	if err := rows.Err(); err != nil {
-		return ModelsResponse{}, fmt.Errorf("iterate models: %w", err)
+	resp := ModelsResponse{Items: make([]ModelItem, 0, len(items))}
+	for _, item := range items {
+		resp.Items = append(resp.Items, *item)
 	}
+	slices.SortFunc(resp.Items, func(a, b ModelItem) int {
+		if a.TotalTokens != b.TotalTokens {
+			if a.TotalTokens > b.TotalTokens {
+				return -1
+			}
+			return 1
+		}
+		if a.Requests != b.Requests {
+			if a.Requests > b.Requests {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
 	return resp, nil
 }
 
 func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int, catalog *pricing.Catalog) (ChainsResponse, error) {
-	query := `
-select
-  chain_root_response_id,
-  coalesce(nullif(model, ''), '(unknown)'),
-  count(*),
-  min(ts),
-  max(ts),
-  coalesce(group_concat(distinct transport), ''),
-  coalesce(sum(total_tokens), 0),
-  coalesce(sum(input_tokens), 0),
-  coalesce(sum(output_tokens), 0),
-  coalesce(sum(cached_tokens), 0),
-  coalesce(sum(reasoning_tokens), 0)
-from usage_events
-where ts >= ?
-`
-	args := []any{window.cutoff.Format(time.RFC3339)}
-	appendUpperBound(&query, &args, window)
-	query += `
-group by chain_root_response_id, coalesce(nullif(model, ''), '(unknown)')
-order by max(ts) desc
-`
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := queryUsageEventsInWindow(ctx, db, window)
 	if err != nil {
-		return ChainsResponse{}, fmt.Errorf("query chains: %w", err)
+		return ChainsResponse{}, err
 	}
-	defer rows.Close()
 
 	type chainAggregate struct {
 		item       *ChainItem
@@ -895,59 +851,40 @@ order by max(ts) desc
 		transports map[string]struct{}
 	}
 	chains := map[string]*chainAggregate{}
-	for rows.Next() {
-		var chainID string
-		var model string
-		var transports string
-		var responseCount, total, input, output, cached, reasoning int64
-		var startedAt, endedAt string
-		if err := rows.Scan(
-			&chainID,
-			&model,
-			&responseCount,
-			&startedAt,
-			&endedAt,
-			&transports,
-			&total,
-			&input,
-			&output,
-			&cached,
-			&reasoning,
-		); err != nil {
-			return ChainsResponse{}, fmt.Errorf("scan chains: %w", err)
-		}
-		chain := chains[chainID]
+	for _, row := range rows {
+		chain := chains[row.ChainRootResponseID]
 		if chain == nil {
 			chain = &chainAggregate{
-				item:       &ChainItem{ChainRootResponseID: chainID, StartedAt: startedAt, EndedAt: endedAt},
+				item: &ChainItem{
+					ChainRootResponseID: row.ChainRootResponseID,
+					StartedAt:           row.Timestamp,
+					EndedAt:             row.Timestamp,
+				},
 				models:     map[string]struct{}{},
 				transports: map[string]struct{}{},
 			}
-			chains[chainID] = chain
+			chains[row.ChainRootResponseID] = chain
 		}
 		item := chain.item
-		item.ResponseCount += responseCount
-		item.TotalTokens += total
-		item.InputTokens += input
-		item.OutputTokens += output
-		item.CachedTokens += cached
-		item.ReasoningTokens += reasoning
-		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, model, input, output, cached, total))
-		if startedAt < item.StartedAt {
-			item.StartedAt = startedAt
+		item.ResponseCount++
+		item.TotalTokens += row.TotalTokens
+		item.InputTokens += row.InputTokens
+		item.OutputTokens += row.OutputTokens
+		item.CachedTokens += row.CachedTokens
+		item.ReasoningTokens += row.ReasoningTokens
+		item.Cost = pricing.Add(item.Cost, estimateCost(catalog, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens, row.TotalTokens))
+		if row.Timestamp < item.StartedAt {
+			item.StartedAt = row.Timestamp
 		}
-		if endedAt > item.EndedAt {
-			item.EndedAt = endedAt
+		if row.Timestamp > item.EndedAt {
+			item.EndedAt = row.Timestamp
 		}
-		if model != "" && model != "(unknown)" {
-			chain.models[model] = struct{}{}
+		if row.Model != "" && row.Model != "(unknown)" {
+			chain.models[row.Model] = struct{}{}
 		}
-		for _, transport := range splitDistinctList(transports) {
-			chain.transports[transport] = struct{}{}
+		if row.Transport != "" {
+			chain.transports[row.Transport] = struct{}{}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return ChainsResponse{}, fmt.Errorf("iterate chains: %w", err)
 	}
 	resp := ChainsResponse{}
 	for _, chain := range chains {
@@ -1451,6 +1388,9 @@ func rateLimitEstimatePriceSignature(catalog *pricing.Catalog) string {
 	for _, model := range models {
 		rate := catalog.Models[model]
 		fmt.Fprintf(&builder, "%s|%.12g|%.12g|%.12g\n", model, rate.Input, rate.CachedInput, rate.Output)
+		for _, tier := range rate.Tiers {
+			fmt.Fprintf(&builder, "tier|%d|%.12g|%.12g|%.12g\n", tier.MinInputTokens, tier.Input, tier.CachedInput, tier.Output)
+		}
 	}
 	sum := sha256.Sum256([]byte(builder.String()))
 	return fmt.Sprintf("%x", sum[:])
@@ -1905,6 +1845,56 @@ func appendUpperBound(query *string, args *[]any, window queryWindow) {
 	}
 	*query += " and ts < ?"
 	*args = append(*args, window.end.Format(time.RFC3339))
+}
+
+func queryUsageEventsInWindow(ctx context.Context, db *sql.DB, window queryWindow) ([]usageEventRow, error) {
+	query := `
+select
+  ts,
+  transport,
+  chain_root_response_id,
+  coalesce(nullif(model, ''), '(unknown)'),
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  cached_tokens,
+  reasoning_tokens
+from usage_events
+where ts >= ?
+`
+	args := []any{window.cutoff.Format(time.RFC3339)}
+	appendUpperBound(&query, &args, window)
+	query += `
+order by ts asc, id asc
+`
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query usage events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []usageEventRow
+	for rows.Next() {
+		var row usageEventRow
+		if err := rows.Scan(
+			&row.Timestamp,
+			&row.Transport,
+			&row.ChainRootResponseID,
+			&row.Model,
+			&row.InputTokens,
+			&row.OutputTokens,
+			&row.TotalTokens,
+			&row.CachedTokens,
+			&row.ReasoningTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scan usage events: %w", err)
+		}
+		events = append(events, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage events: %w", err)
+	}
+	return events, nil
 }
 
 func estimateCost(catalog *pricing.Catalog, model string, input, output, cached, total int64) pricing.Cost {

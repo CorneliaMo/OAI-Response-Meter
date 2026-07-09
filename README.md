@@ -194,6 +194,32 @@ Estimated cost uses `configs/prices.json` by default and can be overridden with
 mark only those tokens as unpriced. Prices are stored as USD per 1M tokens and
 are meant to be edited by the user when OpenAI pricing changes.
 
+Each model entry supports base `input`, `cached_input`, and `output` rates plus
+an optional ordered `tiers` array:
+
+```json
+{
+  "input": 2.5,
+  "cached_input": 0.25,
+  "output": 15.0,
+  "tiers": [
+    {
+      "min_input_tokens": 272001,
+      "input": 5.0,
+      "cached_input": 0.5,
+      "output": 22.5
+    }
+  ]
+}
+```
+
+Tier selection is per usage event, based on that request's total
+`input_tokens`. It is not progressive. If an event crosses a tier threshold,
+the whole request uses that tier's rates for uncached input, cached input, and
+output. For example, `min_input_tokens: 272001` means requests with exactly
+272,000 input tokens still use the base rate, while 272,001 switches the entire
+event to the long-context tier.
+
 ## Proxy Overhead Check
 
 To estimate the overhead added to ordinary non-target HTTPS traffic, compare a

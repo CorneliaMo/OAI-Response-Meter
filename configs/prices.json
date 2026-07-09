@@ -1,23 +1,86 @@
 {
   "currency": "USD",
   "unit": "per_1m_tokens",
-  "last_checked": "2026-06-21",
+  "last_checked": "2026-07-10",
   "source": "https://developers.openai.com/api/docs/pricing",
   "models": {
+    "gpt-5.6-sol": {
+      "input": 5.0,
+      "cached_input": 0.5,
+      "output": 30.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 10.0,
+          "cached_input": 1,
+          "output": 45.0
+        }
+      ]
+    },
+    "gpt-5.6-terra": {
+      "input": 2.5,
+      "cached_input": 0.25,
+      "output": 15.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 5.0,
+          "cached_input": 0.5,
+          "output": 22.5
+        }
+      ]
+    },
+    "gpt-5.6-luna": {
+      "input": 1.0,
+      "cached_input": 0.1,
+      "output": 6.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 2.0,
+          "cached_input": 0.2,
+          "output": 9.0
+        }
+      ]
+    },
     "gpt-5.5": {
       "input": 5.0,
       "cached_input": 0.5,
-      "output": 30.0
+      "output": 30.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 10.0,
+          "cached_input": 1.0,
+          "output": 45.0
+        }
+      ]
     },
     "gpt-5.5-pro": {
       "input": 30.0,
-      "cached_input": 0.0,
-      "output": 180.0
+      "cached_input": 0,
+      "output": 180.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 60.0,
+          "cached_input": 0,
+          "output": 270.0
+        }
+      ]
     },
     "gpt-5.4": {
       "input": 2.5,
       "cached_input": 0.25,
-      "output": 15.0
+      "output": 15.0,
+      "tiers": [
+        {
+          "min_input_tokens": 272001,
+          "input": 5.0,
+          "cached_input": 0.5,
+          "output": 22.5
+        }
+      ]
     },
     "gpt-5.4-mini": {
       "input": 0.75,
@@ -28,21 +91,7 @@
       "input": 0.2,
       "cached_input": 0.02,
       "output": 1.25
-    },
-    "gpt-5.4-pro": {
-      "input": 30.0,
-      "cached_input": 0.0,
-      "output": 180.0
-    },
-    "chat-latest": {
-      "input": 5.0,
-      "cached_input": 0.5,
-      "output": 30.0
-    },
-    "gpt-5.3-codex": {
-      "input": 1.75,
-      "cached_input": 0.175,
-      "output": 14.0
     }
   }
 }
+
