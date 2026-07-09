@@ -725,9 +725,16 @@ function LimitsPanel(props: {
   const { data, limitsOffset, locale, onOffsetChange, t } = props;
   const primaryEstimates = data.estimates.filter((estimate) => estimate.scope === "primary");
   const secondaryEstimates = data.estimates.filter((estimate) => estimate.scope === "secondary");
+  const latestPrimaryEstimate = latestValidEstimate(primaryEstimates);
+  const latestSecondaryEstimate = latestValidEstimate(secondaryEstimates);
 
   return (
     <>
+      <section className="kpiGrid">
+        <LimitEstimateKpi estimate={latestPrimaryEstimate} label={t.limits.latestPrimaryEstimate} locale={locale} t={t} />
+        <LimitEstimateKpi estimate={latestSecondaryEstimate} label={t.limits.latestSecondaryEstimate} locale={locale} t={t} />
+      </section>
+
       <ChartPanel
         title={t.limits.chartEyebrow}
         subtitle={t.limits.chartTitle}
@@ -841,6 +848,26 @@ function LimitsPanel(props: {
         </div>
       </section>
     </>
+  );
+}
+
+function LimitEstimateKpi(props: {
+  estimate: RateLimitWindowEstimate | null;
+  label: string;
+  locale: Locale;
+  t: (typeof messages)[Locale];
+}) {
+  const { estimate, label, locale, t } = props;
+  return (
+    <article className="kpiCard">
+      <p>{label}</p>
+      <strong>{estimate ? formatMoneyValue(estimate.best_limit, "USD", locale) : t.limits.noValidEstimate}</strong>
+      <span>
+        {estimate
+          ? t.limits.latestEstimateDetail(formatTime(estimate.reset_at_time, locale, t), formatInt(estimate.observations, locale))
+          : t.limits.noValidEstimateDetail}
+      </span>
+    </article>
   );
 }
 
@@ -1190,6 +1217,18 @@ function formatEstimateBounds(estimate: RateLimitWindowEstimate, locale: Locale)
   const low = formatMoneyValue(estimate.limit_low, "USD", locale);
   const high = Number.isFinite(estimate.limit_high) && estimate.limit_high > 0 ? formatMoneyValue(estimate.limit_high, "USD", locale) : "∞";
   return `${low} - ${high}`;
+}
+
+function latestValidEstimate(estimates: RateLimitWindowEstimate[]) {
+  return estimates.reduce<RateLimitWindowEstimate | null>((latest, estimate) => {
+    if (!estimate.feasible || estimate.best_limit <= 0) {
+      return latest;
+    }
+    if (!latest || estimate.reset_at > latest.reset_at) {
+      return estimate;
+    }
+    return latest;
+  }, null);
 }
 
 function describeCost(cost: Cost, locale: Locale, t: (typeof messages)[Locale]) {

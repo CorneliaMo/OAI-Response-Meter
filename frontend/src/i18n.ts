@@ -164,6 +164,11 @@ export const messages = {
     limits: {
       chartEyebrow: "Rate Limits",
       chartTitle: "Primary and secondary usage",
+      latestPrimaryEstimate: "Latest Primary Estimate",
+      latestSecondaryEstimate: "Latest Secondary Estimate",
+      noValidEstimate: "No estimate",
+      noValidEstimateDetail: "No non-zero valid estimate in range",
+      latestEstimateDetail: (resetAt: string, observations: string) => `reset ${resetAt}, ${observations} observations`,
       estimatesEyebrow: "Estimates",
       primaryEstimatesTitle: "Primary window limit estimates",
       secondaryEstimatesTitle: "Secondary window limit estimates",
@@ -374,6 +379,11 @@ export const messages = {
     limits: {
       chartEyebrow: "限额",
       chartTitle: "Primary / Secondary 使用率",
+      latestPrimaryEstimate: "最新 Primary 额度估计",
+      latestSecondaryEstimate: "最新 Secondary 额度估计",
+      noValidEstimate: "暂无估计",
+      noValidEstimateDetail: "当前范围没有非零有效估计",
+      latestEstimateDetail: (resetAt: string, observations: string) => `重置 ${resetAt}，${observations} 个观测`,
       estimatesEyebrow: "估计",
       primaryEstimatesTitle: "Primary 窗口额度估计",
       secondaryEstimatesTitle: "Secondary 窗口额度估计",
