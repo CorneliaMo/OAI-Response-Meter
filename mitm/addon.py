@@ -145,8 +145,7 @@ def rate_limits_event_from_payload(payload: dict[str, Any], transport: str, host
             "path": path,
             "raw_json": raw_json,
         }
-    primary = _rate_limit_window(rate_limits.get("primary"))
-    secondary = _rate_limit_window(rate_limits.get("secondary"))
+    five_hour, weekly = _classify_rate_limit_windows(rate_limits)
     event = {
         "schema": SCHEMA_VERSION,
         "event_type": "codex_rate_limits",
@@ -162,17 +161,28 @@ def rate_limits_event_from_payload(payload: dict[str, Any], transport: str, host
     }
     event.update(
         {
-            "primary_used_percent": primary["used_percent"],
-            "primary_window_minutes": primary["window_minutes"],
-            "primary_reset_after_seconds": primary["reset_after_seconds"],
-            "primary_reset_at": primary["reset_at"],
-            "secondary_used_percent": secondary["used_percent"],
-            "secondary_window_minutes": secondary["window_minutes"],
-            "secondary_reset_after_seconds": secondary["reset_after_seconds"],
-            "secondary_reset_at": secondary["reset_at"],
+            "five_hour_used_percent": five_hour["used_percent"],
+            "five_hour_window_minutes": five_hour["window_minutes"],
+            "five_hour_reset_after_seconds": five_hour["reset_after_seconds"],
+            "five_hour_reset_at": five_hour["reset_at"],
+            "weekly_used_percent": weekly["used_percent"],
+            "weekly_window_minutes": weekly["window_minutes"],
+            "weekly_reset_after_seconds": weekly["reset_after_seconds"],
+            "weekly_reset_at": weekly["reset_at"],
         }
     )
     return event
+
+
+def _classify_rate_limit_windows(rate_limits: dict[str, Any]) -> tuple[dict[str, int], dict[str, int]]:
+    windows = (_rate_limit_window(rate_limits.get("primary")), _rate_limit_window(rate_limits.get("secondary")))
+    five_hour = next((window for window in windows if window["window_minutes"] == 300), _empty_rate_limit_window())
+    weekly = next((window for window in windows if window["window_minutes"] == 10080), _empty_rate_limit_window())
+    return five_hour, weekly
+
+
+def _empty_rate_limit_window() -> dict[str, int]:
+    return {"used_percent": 0, "window_minutes": 0, "reset_after_seconds": 0, "reset_at": 0}
 
 
 def event_from_response(response: dict[str, Any], transport: str, host: str, path: str) -> Optional[dict[str, Any]]:

@@ -424,9 +424,9 @@ func TestHeatmapEndpointReturns365DaysAndHighlightsRange(t *testing.T) {
 
 func TestRateLimitsEndpoint(t *testing.T) {
 	rateLimits := []event.RateLimits{
-		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 40, 60, 1_781_881_906, 20, 1440, 1_782_380_758),
-		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 55, 60, 1_781_883_706, 25, 1440, 1_782_382_558),
-		testRateLimit("2026-06-21T11:00:00Z", "plus", false, true, 90, 60, 1_782_039_906, 45, 1440, 1_782_391_558),
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 40, 300, 1_781_881_906, 20, 10080, 1_782_380_758),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 55, 300, 1_781_883_706, 25, 10080, 1_782_382_558),
+		testRateLimit("2026-06-21T11:00:00Z", "plus", false, true, 90, 300, 1_782_039_906, 45, 10080, 1_782_391_558),
 	}
 	handler := testHandlerWithAllEvents(t, nil, nil, rateLimits)
 
@@ -443,14 +443,35 @@ func TestRateLimitsEndpoint(t *testing.T) {
 	if resp.Bucket != "event" || resp.Limit != 1 || len(resp.Items) != 1 || len(resp.Points) != 3 {
 		t.Fatalf("response = %+v", resp)
 	}
-	if !resp.Items[0].LimitReached || resp.Items[0].PrimaryResetAt != "2026-06-21T11:05:06Z" {
+	if !resp.Items[0].LimitReached || resp.Items[0].FiveHourResetAt != "2026-06-21T11:05:06Z" {
 		t.Fatalf("first item = %+v", resp.Items[0])
 	}
-	if resp.Points[1].Time != "2026-06-21T08:30:00Z" || resp.Points[1].PrimaryUsedPercent != 55 || resp.Points[1].SecondaryUsedPercent != 25 {
+	if resp.Points[1].Time != "2026-06-21T08:30:00Z" || resp.Points[1].FiveHourUsedPercent == nil || *resp.Points[1].FiveHourUsedPercent != 55 || resp.Points[1].WeeklyUsedPercent == nil || *resp.Points[1].WeeklyUsedPercent != 25 {
 		t.Fatalf("middle point = %+v", resp.Points)
 	}
-	if resp.Points[2].PrimaryUsedPercent != 90 || resp.Points[2].SecondaryUsedPercent != 45 {
+	if resp.Points[2].FiveHourUsedPercent == nil || *resp.Points[2].FiveHourUsedPercent != 90 || resp.Points[2].WeeklyUsedPercent == nil || *resp.Points[2].WeeklyUsedPercent != 45 {
 		t.Fatalf("points = %+v", resp.Points)
+	}
+}
+
+func TestRateLimitsEndpointLeavesFiveHourUnknownWhenOnlyWeeklyWindowExists(t *testing.T) {
+	rateLimits := []event.RateLimits{
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 0, 0, 0, 100, 10080, 1_782_380_758),
+	}
+	handler := testHandlerWithAllEvents(t, nil, nil, rateLimits)
+
+	resp := requestRateLimits(t, handler)
+	if len(resp.Points) != 1 || resp.Points[0].FiveHourUsedPercent != nil {
+		t.Fatalf("five-hour point = %+v, want unknown", resp.Points)
+	}
+	if resp.Points[0].WeeklyUsedPercent == nil || *resp.Points[0].WeeklyUsedPercent != 100 {
+		t.Fatalf("weekly point = %+v, want 100%%", resp.Points)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].FiveHourUsedPercent != nil {
+		t.Fatalf("five-hour item = %+v, want unknown", resp.Items)
+	}
+	if resp.Items[0].WeeklyUsedPercent == nil || *resp.Items[0].WeeklyUsedPercent != 100 {
+		t.Fatalf("weekly item = %+v, want 100%%", resp.Items)
 	}
 }
 
@@ -467,9 +488,9 @@ func TestRateLimitWindowEstimatesUseScopeResetWindow(t *testing.T) {
 		testUsage("estimate_2", "", "gpt-test", "https-json", "2026-06-21T08:40:00Z", 100_000),
 	}
 	rateLimits := []event.RateLimits{
-		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, 1_782_000_000, 50, 1440, 1_782_500_000),
-		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, 1_782_000_000, 60, 1440, 1_782_500_000),
-		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, 1_782_100_000, 70, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 300, 1_782_000_000, 50, 10080, 1_782_500_000),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 300, 1_782_000_000, 60, 10080, 1_782_500_000),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 300, 1_782_100_000, 70, 10080, 1_782_500_000),
 	}
 	handler := testHandlerWithAllEvents(t, catalog, usages, rateLimits)
 
@@ -486,7 +507,7 @@ func TestRateLimitWindowEstimatesUseScopeResetWindow(t *testing.T) {
 
 	var secondary *RateLimitWindowEstimate
 	for i := range resp.Estimates {
-		if resp.Estimates[i].Scope == "secondary" && resp.Estimates[i].ResetAt == 1_782_500_000 {
+		if resp.Estimates[i].Scope == "weekly" && resp.Estimates[i].ResetAt == 1_782_500_000 {
 			secondary = &resp.Estimates[i]
 			break
 		}
@@ -545,14 +566,14 @@ func TestRateLimitWindowEstimatesUseCacheWriteCost(t *testing.T) {
 		},
 	}
 	rateLimits := []event.RateLimits{
-		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, 1_782_000_000, 50, 1440, 1_782_500_000),
-		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, 1_782_000_000, 60, 1440, 1_782_500_000),
-		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, 1_782_100_000, 70, 1440, 1_782_500_000),
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 300, 1_782_000_000, 50, 10080, 1_782_500_000),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 300, 1_782_000_000, 60, 10080, 1_782_500_000),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 300, 1_782_100_000, 70, 10080, 1_782_500_000),
 	}
 	handler := testHandlerWithAllEvents(t, catalog, usages, rateLimits)
 
 	resp := requestRateLimits(t, handler)
-	secondary := findEstimate(t, resp.Estimates, "secondary", 1_782_500_000)
+	secondary := findEstimate(t, resp.Estimates, "weekly", 1_782_500_000)
 	if math.Abs(secondary.TotalVisibleCost-0.25) > 0.000001 {
 		t.Fatalf("secondary total_visible_cost = %f, want 0.25", secondary.TotalVisibleCost)
 	}
@@ -572,16 +593,16 @@ func TestRateLimitWindowEstimateCachePersistsExpiredWindow(t *testing.T) {
 		testUsage("cache_2", "", "gpt-test", "https-json", "2026-06-21T08:40:00Z", 100_000),
 	}
 	rateLimits := []event.RateLimits{
-		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, resetAt, 50, 1440, resetAt),
-		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, resetAt, 60, 1440, resetAt),
-		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 60, resetAt, 70, 1440, resetAt),
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 300, resetAt, 50, 10080, resetAt),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 300, resetAt, 60, 10080, resetAt),
+		testRateLimit("2026-06-21T09:00:00Z", "plus", true, false, 30, 300, resetAt, 70, 10080, resetAt),
 	}
 	handler, db := testHandlerWithAllEventsAndNow(t, catalog, usages, rateLimits, func() time.Time {
 		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	})
 
 	first := requestRateLimits(t, handler)
-	firstPrimary := findEstimate(t, first.Estimates, "primary", resetAt)
+	firstPrimary := findEstimate(t, first.Estimates, "five_hour", resetAt)
 	if firstPrimary.BestLimit <= 0 {
 		t.Fatalf("first primary estimate = %+v", firstPrimary)
 	}
@@ -597,7 +618,7 @@ func TestRateLimitWindowEstimateCachePersistsExpiredWindow(t *testing.T) {
 	}
 
 	second := requestRateLimits(t, handler)
-	secondPrimary := findEstimate(t, second.Estimates, "primary", resetAt)
+	secondPrimary := findEstimate(t, second.Estimates, "five_hour", resetAt)
 	if secondPrimary.BestLimit != firstPrimary.BestLimit || secondPrimary.Observations != firstPrimary.Observations {
 		t.Fatalf("cache was not reused: first=%+v second=%+v", firstPrimary, secondPrimary)
 	}
@@ -615,8 +636,8 @@ func TestRateLimitWindowEstimateCacheSkipsActiveWindow(t *testing.T) {
 	handler, db := testHandlerWithAllEventsAndNow(t, catalog, []event.Usage{
 		testUsage("active_cache_1", "", "gpt-test", "https-json", "2026-06-21T08:10:00Z", 100_000),
 	}, []event.RateLimits{
-		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 60, resetAt, 50, 1440, resetAt),
-		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 60, resetAt, 60, 1440, resetAt),
+		testRateLimit("2026-06-21T08:00:00Z", "plus", true, false, 10, 300, resetAt, 50, 10080, resetAt),
+		testRateLimit("2026-06-21T08:30:00Z", "plus", true, false, 20, 300, resetAt, 60, 10080, resetAt),
 	}, func() time.Time {
 		return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	})
@@ -1066,26 +1087,26 @@ func testUsage(responseID, previousResponseID, model, transport, ts string, tota
 	}
 }
 
-func testRateLimit(ts, plan string, allowed, reached bool, primaryUsed, primaryWindow, primaryResetAt, secondaryUsed, secondaryWindow, secondaryResetAt int64) event.RateLimits {
+func testRateLimit(ts, plan string, allowed, reached bool, fiveHourUsed, fiveHourWindow, fiveHourResetAt, weeklyUsed, weeklyWindow, weeklyResetAt int64) event.RateLimits {
 	return event.RateLimits{
-		Schema:                     event.SchemaVersion,
-		EventType:                  event.RateLimitsEventType,
-		Timestamp:                  ts,
-		Source:                     "mitmproxy",
-		Transport:                  "https-json",
-		Host:                       "api.openai.com",
-		Path:                       "/v1/responses",
-		PlanType:                   plan,
-		Allowed:                    allowed,
-		LimitReached:               reached,
-		PrimaryUsedPercent:         primaryUsed,
-		PrimaryWindowMinutes:       primaryWindow,
-		PrimaryResetAfterSeconds:   30,
-		PrimaryResetAt:             primaryResetAt,
-		SecondaryUsedPercent:       secondaryUsed,
-		SecondaryWindowMinutes:     secondaryWindow,
-		SecondaryResetAfterSeconds: 60,
-		SecondaryResetAt:           secondaryResetAt,
-		RawJSON:                    `{"type":"codex.rate_limits"}`,
+		Schema:                    event.SchemaVersion,
+		EventType:                 event.RateLimitsEventType,
+		Timestamp:                 ts,
+		Source:                    "mitmproxy",
+		Transport:                 "https-json",
+		Host:                      "api.openai.com",
+		Path:                      "/v1/responses",
+		PlanType:                  plan,
+		Allowed:                   allowed,
+		LimitReached:              reached,
+		FiveHourUsedPercent:       fiveHourUsed,
+		FiveHourWindowMinutes:     fiveHourWindow,
+		FiveHourResetAfterSeconds: 30,
+		FiveHourResetAt:           fiveHourResetAt,
+		WeeklyUsedPercent:         weeklyUsed,
+		WeeklyWindowMinutes:       weeklyWindow,
+		WeeklyResetAfterSeconds:   60,
+		WeeklyResetAt:             weeklyResetAt,
+		RawJSON:                   `{"type":"codex.rate_limits"}`,
 	}
 }

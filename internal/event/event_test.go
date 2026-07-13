@@ -85,8 +85,19 @@ func TestDecodeDatagramRateLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeDatagram() error = %v", err)
 	}
-	if got.Kind != KindRateLimits || got.RateLimits.PlanType != "plus" || got.RateLimits.PrimaryResetAt != 1781881906 {
+	if got.Kind != KindRateLimits || got.RateLimits.PlanType != "plus" || got.RateLimits.FiveHourResetAt != 1781881906 || got.RateLimits.WeeklyResetAt != 1782380758 {
 		t.Fatalf("DecodeDatagram() = %+v", got)
+	}
+}
+
+func TestDecodeDatagramClassifiesWeeklyWindowFromLegacyPrimaryField(t *testing.T) {
+	raw := []byte(`{"schema":1,"event_type":"codex_rate_limits","ts":"2026-06-20T12:00:00Z","source":"mitmproxy","transport":"websocket","host":"chatgpt.com","path":"/backend-api/codex","primary_used_percent":100,"primary_window_minutes":10080,"primary_reset_after_seconds":60,"primary_reset_at":1782380758,"raw_json":"{}"}`)
+	got, err := DecodeDatagram(raw)
+	if err != nil {
+		t.Fatalf("DecodeDatagram() error = %v", err)
+	}
+	if got.RateLimits.FiveHourResetAt != 0 || got.RateLimits.WeeklyUsedPercent != 100 || got.RateLimits.WeeklyResetAt != 1782380758 {
+		t.Fatalf("rate limits = %+v", got.RateLimits)
 	}
 }
 

@@ -110,8 +110,8 @@ type HeatmapResponse = {
 
 type RateLimitPoint = {
   time: string;
-  primary_used_percent: number;
-  secondary_used_percent: number;
+  five_hour_used_percent: number | null;
+  weekly_used_percent: number | null;
   events: number;
 };
 
@@ -123,19 +123,19 @@ type RateLimitItem = {
   plan_type: string;
   allowed: boolean;
   limit_reached: boolean;
-  primary_used_percent: number;
-  primary_window_minutes: number;
-  primary_reset_after_seconds: number;
-  primary_reset_at: string;
-  secondary_used_percent: number;
-  secondary_window_minutes: number;
-  secondary_reset_after_seconds: number;
-  secondary_reset_at: string;
+  five_hour_used_percent: number | null;
+  five_hour_window_minutes: number;
+  five_hour_reset_after_seconds: number;
+  five_hour_reset_at: string;
+  weekly_used_percent: number | null;
+  weekly_window_minutes: number;
+  weekly_reset_after_seconds: number;
+  weekly_reset_at: string;
   raw_json: string;
 };
 
 type RateLimitWindowEstimate = {
-  scope: "primary" | "secondary";
+  scope: "five_hour" | "weekly";
   reset_at: number;
   reset_at_time: string;
   window_minutes: number;
@@ -747,16 +747,16 @@ function LimitsPanel(props: {
   t: (typeof messages)[Locale];
 }) {
   const { data, limitsOffset, locale, onOffsetChange, t } = props;
-  const primaryEstimates = data.estimates.filter((estimate) => estimate.scope === "primary");
-  const secondaryEstimates = data.estimates.filter((estimate) => estimate.scope === "secondary");
-  const latestPrimaryEstimate = latestValidEstimate(primaryEstimates);
-  const latestSecondaryEstimate = latestValidEstimate(secondaryEstimates);
+  const fiveHourEstimates = data.estimates.filter((estimate) => estimate.scope === "five_hour");
+  const weeklyEstimates = data.estimates.filter((estimate) => estimate.scope === "weekly");
+  const latestFiveHourEstimate = latestValidEstimate(fiveHourEstimates);
+  const latestWeeklyEstimate = latestValidEstimate(weeklyEstimates);
 
   return (
     <>
       <section className="kpiGrid">
-        <LimitEstimateKpi estimate={latestPrimaryEstimate} label={t.limits.latestPrimaryEstimate} locale={locale} t={t} />
-        <LimitEstimateKpi estimate={latestSecondaryEstimate} label={t.limits.latestSecondaryEstimate} locale={locale} t={t} />
+        <LimitEstimateKpi estimate={latestFiveHourEstimate} label={t.limits.latestFiveHourEstimate} locale={locale} t={t} />
+        <LimitEstimateKpi estimate={latestWeeklyEstimate} label={t.limits.latestWeeklyEstimate} locale={locale} t={t} />
       </section>
 
       <ChartPanel
@@ -786,27 +786,27 @@ function LimitsPanel(props: {
           },
           series: [
             {
-              name: t.limits.primary,
+              name: t.limits.fiveHour,
               type: "line",
               smooth: false,
               showSymbol: false,
               lineStyle: { color: "#1f6feb", width: 2 },
-              data: data.points.map((point) => point.primary_used_percent),
+              data: data.points.map((point) => point.five_hour_used_percent),
             },
             {
-              name: t.limits.secondary,
+              name: t.limits.weekly,
               type: "line",
               smooth: false,
               showSymbol: false,
               lineStyle: { color: "#2da44e", width: 2 },
-              data: data.points.map((point) => point.secondary_used_percent),
+              data: data.points.map((point) => point.weekly_used_percent),
             },
           ],
         }}
       />
 
-      <WindowEstimatePanel estimates={primaryEstimates} locale={locale} scope="primary" t={t} />
-      <WindowEstimatePanel estimates={secondaryEstimates} locale={locale} scope="secondary" t={t} />
+      <WindowEstimatePanel estimates={fiveHourEstimates} locale={locale} scope="five_hour" t={t} />
+      <WindowEstimatePanel estimates={weeklyEstimates} locale={locale} scope="weekly" t={t} />
 
       <section className="panel">
         <div className="panelHeader">
@@ -824,8 +824,8 @@ function LimitsPanel(props: {
                 <th>{t.limits.plan}</th>
                 <th>{t.filters.transport}</th>
                 <th>{t.limits.allowed}</th>
-                <th>{t.limits.primary}</th>
-                <th>{t.limits.secondary}</th>
+                <th>{t.limits.fiveHour}</th>
+                <th>{t.limits.weekly}</th>
                 <th>{t.limits.rawJson}</th>
               </tr>
             </thead>
@@ -843,12 +843,12 @@ function LimitsPanel(props: {
                     <span>{item.limit_reached ? t.limits.limitReached : t.limits.notReached}</span>
                   </td>
                   <td>
-                    <strong>{formatPercentFromWhole(item.primary_used_percent)}</strong>
-                    <span>{t.limits.resetInfo(item.primary_window_minutes, item.primary_reset_after_seconds, formatTime(item.primary_reset_at, locale, t))}</span>
+                    <strong>{formatOptionalPercent(item.five_hour_used_percent, t)}</strong>
+                    {item.five_hour_used_percent === null ? null : <span>{t.limits.resetInfo(item.five_hour_window_minutes, item.five_hour_reset_after_seconds, formatTime(item.five_hour_reset_at, locale, t))}</span>}
                   </td>
                   <td>
-                    <strong>{formatPercentFromWhole(item.secondary_used_percent)}</strong>
-                    <span>{t.limits.resetInfo(item.secondary_window_minutes, item.secondary_reset_after_seconds, formatTime(item.secondary_reset_at, locale, t))}</span>
+                    <strong>{formatOptionalPercent(item.weekly_used_percent, t)}</strong>
+                    {item.weekly_used_percent === null ? null : <span>{t.limits.resetInfo(item.weekly_window_minutes, item.weekly_reset_after_seconds, formatTime(item.weekly_reset_at, locale, t))}</span>}
                   </td>
                   <td>
                     <details>
@@ -898,11 +898,11 @@ function LimitEstimateKpi(props: {
 function WindowEstimatePanel(props: {
   estimates: RateLimitWindowEstimate[];
   locale: Locale;
-  scope: "primary" | "secondary";
+  scope: "five_hour" | "weekly";
   t: (typeof messages)[Locale];
 }) {
   const { estimates, locale, scope, t } = props;
-  const scopeLabel = scope === "primary" ? t.limits.primary : t.limits.secondary;
+  const scopeLabel = scope === "five_hour" ? t.limits.fiveHour : t.limits.weekly;
   const [showInsufficient, setShowInsufficient] = useState(false);
   const sortedEstimates = useMemo(() => [...estimates].sort((left, right) => right.reset_at - left.reset_at), [estimates]);
   const usefulEstimates = sortedEstimates.filter(isUsefulEstimate);
@@ -914,7 +914,7 @@ function WindowEstimatePanel(props: {
       <div className="panelHeader">
         <div>
           <p className="panelEyebrow">{t.limits.estimatesEyebrow}</p>
-          <h3>{scope === "primary" ? t.limits.primaryEstimatesTitle : t.limits.secondaryEstimatesTitle}</h3>
+          <h3>{scope === "five_hour" ? t.limits.fiveHourEstimatesTitle : t.limits.weeklyEstimatesTitle}</h3>
         </div>
         <div className="estimateHeaderActions">
           <p className="microcopy">{t.limits.estimatesHint}</p>
@@ -1332,6 +1332,10 @@ function formatPercent(value: number) {
 
 function formatPercentFromWhole(value: number) {
   return `${value}%`;
+}
+
+function formatOptionalPercent(value: number | null, t: (typeof messages)[Locale]) {
+  return value === null ? t.tables.unknown : formatPercentFromWhole(value);
 }
 
 function formatTime(value: string, locale: Locale, t: (typeof messages)[Locale]) {

@@ -126,8 +126,8 @@ class AddonTest(unittest.TestCase):
         self.assertEqual(event["plan_type"], "plus")
         self.assertTrue(event["allowed"])
         self.assertFalse(event["limit_reached"])
-        self.assertEqual(event["primary_reset_at"], 1781881906)
-        self.assertEqual(event["secondary_reset_at"], 1782380758)
+        self.assertEqual(event["five_hour_reset_at"], 1781881906)
+        self.assertEqual(event["weekly_reset_at"], 1782380758)
         self.assertIn("codex.rate_limits", event["raw_json"])
 
     def test_extract_websocket_codex_rate_limits_without_expected_keys(self):
@@ -141,7 +141,27 @@ class AddonTest(unittest.TestCase):
         self.assertIsNotNone(event)
         self.assertEqual(event["event_type"], "codex_rate_limits")
         self.assertIn("raw_json", event)
-        self.assertNotIn("primary_reset_at", event)
+        self.assertNotIn("five_hour_reset_at", event)
+
+    def test_extract_websocket_weekly_limit_without_five_hour_limit(self):
+        flow = Obj(
+            request=Obj(host="chatgpt.com", path="/backend-api/codex"),
+            websocket=Obj(
+                messages=[
+                    Obj(
+                        from_client=False,
+                        text='{"type":"codex.rate_limits","rate_limits":{"allowed":true,"primary":{"used_percent":100,"window_minutes":10080,"reset_after_seconds":60,"reset_at":1782380758}}}',
+                    )
+                ]
+            ),
+        )
+
+        event = extract_websocket_usage(flow)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["five_hour_window_minutes"], 0)
+        self.assertEqual(event["weekly_used_percent"], 100)
+        self.assertEqual(event["weekly_window_minutes"], 10080)
 
     def test_ignores_client_websocket_messages(self):
         flow = Obj(

@@ -195,14 +195,14 @@ func (d *Daemon) logDatagram(item event.Datagram) {
 		)
 	case event.KindRateLimits:
 		limits := item.RateLimits
-		d.logf("received codex_rate_limits plan=%s allowed=%t limit_reached=%t primary_reset_at=%d secondary_reset_at=%d primary_used=%d secondary_used=%d",
+		d.logf("received codex_rate_limits plan=%s allowed=%t limit_reached=%t five_hour_reset_at=%d weekly_reset_at=%d five_hour_used=%d weekly_used=%d",
 			limits.PlanType,
 			limits.Allowed,
 			limits.LimitReached,
-			limits.PrimaryResetAt,
-			limits.SecondaryResetAt,
-			limits.PrimaryUsedPercent,
-			limits.SecondaryUsedPercent,
+			limits.FiveHourResetAt,
+			limits.WeeklyResetAt,
+			limits.FiveHourUsedPercent,
+			limits.WeeklyUsedPercent,
 		)
 	}
 }

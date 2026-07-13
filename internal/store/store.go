@@ -172,14 +172,14 @@ insert into codex_rate_limit_events (
 			item.PlanType,
 			item.Allowed,
 			item.LimitReached,
-			item.PrimaryUsedPercent,
-			item.PrimaryWindowMinutes,
-			item.PrimaryResetAfterSeconds,
-			item.PrimaryResetAt,
-			item.SecondaryUsedPercent,
-			item.SecondaryWindowMinutes,
-			item.SecondaryResetAfterSeconds,
-			item.SecondaryResetAt,
+			item.FiveHourUsedPercent,
+			item.FiveHourWindowMinutes,
+			item.FiveHourResetAfterSeconds,
+			item.FiveHourResetAt,
+			item.WeeklyUsedPercent,
+			item.WeeklyWindowMinutes,
+			item.WeeklyResetAfterSeconds,
+			item.WeeklyResetAt,
 			item.RawJSON,
 		); err != nil {
 			return WriteResult{}, fmt.Errorf("insert rate limits event: %w", err)
@@ -325,6 +325,7 @@ func (s *Store) init(ctx context.Context) error {
   updated_at text not null default current_timestamp,
   primary key (scope, reset_at, price_signature)
 )`,
+		`delete from rate_limit_window_estimate_cache where scope in ('primary', 'secondary')`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {

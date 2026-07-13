@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cornelia/oai-response-meter/internal/event"
 	"github.com/cornelia/oai-response-meter/internal/pricing"
 	_ "modernc.org/sqlite"
 )
@@ -161,29 +162,29 @@ type RateLimitsResponse struct {
 }
 
 type RateLimitItem struct {
-	Timestamp                  string `json:"ts"`
-	Transport                  string `json:"transport"`
-	Host                       string `json:"host"`
-	Path                       string `json:"path"`
-	PlanType                   string `json:"plan_type"`
-	Allowed                    bool   `json:"allowed"`
-	LimitReached               bool   `json:"limit_reached"`
-	PrimaryUsedPercent         int64  `json:"primary_used_percent"`
-	PrimaryWindowMinutes       int64  `json:"primary_window_minutes"`
-	PrimaryResetAfterSeconds   int64  `json:"primary_reset_after_seconds"`
-	PrimaryResetAt             string `json:"primary_reset_at"`
-	SecondaryUsedPercent       int64  `json:"secondary_used_percent"`
-	SecondaryWindowMinutes     int64  `json:"secondary_window_minutes"`
-	SecondaryResetAfterSeconds int64  `json:"secondary_reset_after_seconds"`
-	SecondaryResetAt           string `json:"secondary_reset_at"`
-	RawJSON                    string `json:"raw_json"`
+	Timestamp                 string `json:"ts"`
+	Transport                 string `json:"transport"`
+	Host                      string `json:"host"`
+	Path                      string `json:"path"`
+	PlanType                  string `json:"plan_type"`
+	Allowed                   bool   `json:"allowed"`
+	LimitReached              bool   `json:"limit_reached"`
+	FiveHourUsedPercent       *int64 `json:"five_hour_used_percent"`
+	FiveHourWindowMinutes     int64  `json:"five_hour_window_minutes"`
+	FiveHourResetAfterSeconds int64  `json:"five_hour_reset_after_seconds"`
+	FiveHourResetAt           string `json:"five_hour_reset_at"`
+	WeeklyUsedPercent         *int64 `json:"weekly_used_percent"`
+	WeeklyWindowMinutes       int64  `json:"weekly_window_minutes"`
+	WeeklyResetAfterSeconds   int64  `json:"weekly_reset_after_seconds"`
+	WeeklyResetAt             string `json:"weekly_reset_at"`
+	RawJSON                   string `json:"raw_json"`
 }
 
 type RateLimitPoint struct {
-	Time                 string `json:"time"`
-	PrimaryUsedPercent   int64  `json:"primary_used_percent"`
-	SecondaryUsedPercent int64  `json:"secondary_used_percent"`
-	Events               int64  `json:"events"`
+	Time                string `json:"time"`
+	FiveHourUsedPercent *int64 `json:"five_hour_used_percent"`
+	WeeklyUsedPercent   *int64 `json:"weekly_used_percent"`
+	Events              int64  `json:"events"`
 }
 
 type RateLimitWindowEstimate struct {
@@ -359,6 +360,9 @@ func initRateLimitEstimateCache(ctx context.Context, db *sql.DB) error {
 )`)
 	if err != nil {
 		return fmt.Errorf("init rate limit estimate cache: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `delete from rate_limit_window_estimate_cache where scope in ('primary', 'secondary')`); err != nil {
+		return fmt.Errorf("clear legacy rate limit estimate cache: %w", err)
 	}
 	return nil
 }
@@ -1077,7 +1081,9 @@ func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit,
 select
   ts,
   primary_used_percent,
-  secondary_used_percent
+  primary_window_minutes,
+  secondary_used_percent,
+  secondary_window_minutes
 from codex_rate_limit_events
 where ts >= ?
 `
@@ -1095,16 +1101,18 @@ order by ts asc
 	resp := RateLimitsResponse{Range: window.name, Bucket: "event", Limit: limit, Offset: offset}
 	for pointRows.Next() {
 		var ts string
-		var primaryUsed, secondaryUsed int64
-		if err := pointRows.Scan(&ts, &primaryUsed, &secondaryUsed); err != nil {
+		var primaryUsed, primaryWindow, secondaryUsed, secondaryWindow int64
+		if err := pointRows.Scan(&ts, &primaryUsed, &primaryWindow, &secondaryUsed, &secondaryWindow); err != nil {
 			return RateLimitsResponse{}, fmt.Errorf("scan rate limit point: %w", err)
 		}
-		resp.Points = append(resp.Points, RateLimitPoint{
-			Time:                 ts,
-			PrimaryUsedPercent:   primaryUsed,
-			SecondaryUsedPercent: secondaryUsed,
-			Events:               1,
-		})
+		point := RateLimitPoint{Time: ts, Events: 1}
+		if primaryWindow == event.FiveHourWindowMinutes {
+			point.FiveHourUsedPercent = &primaryUsed
+		}
+		if secondaryWindow == event.WeeklyWindowMinutes {
+			point.WeeklyUsedPercent = &secondaryUsed
+		}
+		resp.Points = append(resp.Points, point)
 	}
 	if err := pointRows.Err(); err != nil {
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit points: %w", err)
@@ -1147,7 +1155,8 @@ limit ? offset ?
 	for itemRows.Next() {
 		var item RateLimitItem
 		var allowedInt, limitReachedInt int64
-		var primaryResetAt, secondaryResetAt int64
+		var primaryUsed, primaryWindow, primaryResetAfter, primaryResetAt int64
+		var secondaryUsed, secondaryWindow, secondaryResetAfter, secondaryResetAt int64
 		if err := itemRows.Scan(
 			&item.Timestamp,
 			&item.Transport,
@@ -1156,13 +1165,13 @@ limit ? offset ?
 			&item.PlanType,
 			&allowedInt,
 			&limitReachedInt,
-			&item.PrimaryUsedPercent,
-			&item.PrimaryWindowMinutes,
-			&item.PrimaryResetAfterSeconds,
+			&primaryUsed,
+			&primaryWindow,
+			&primaryResetAfter,
 			&primaryResetAt,
-			&item.SecondaryUsedPercent,
-			&item.SecondaryWindowMinutes,
-			&item.SecondaryResetAfterSeconds,
+			&secondaryUsed,
+			&secondaryWindow,
+			&secondaryResetAfter,
 			&secondaryResetAt,
 			&item.RawJSON,
 		); err != nil {
@@ -1170,8 +1179,18 @@ limit ? offset ?
 		}
 		item.Allowed = allowedInt != 0
 		item.LimitReached = limitReachedInt != 0
-		item.PrimaryResetAt = unixTimeString(primaryResetAt)
-		item.SecondaryResetAt = unixTimeString(secondaryResetAt)
+		if primaryWindow == event.FiveHourWindowMinutes {
+			item.FiveHourUsedPercent = &primaryUsed
+			item.FiveHourWindowMinutes = primaryWindow
+			item.FiveHourResetAfterSeconds = primaryResetAfter
+			item.FiveHourResetAt = unixTimeString(primaryResetAt)
+		}
+		if secondaryWindow == event.WeeklyWindowMinutes {
+			item.WeeklyUsedPercent = &secondaryUsed
+			item.WeeklyWindowMinutes = secondaryWindow
+			item.WeeklyResetAfterSeconds = secondaryResetAfter
+			item.WeeklyResetAt = unixTimeString(secondaryResetAt)
+		}
 		resp.Items = append(resp.Items, item)
 	}
 	if err := itemRows.Err(); err != nil {
@@ -1426,13 +1445,13 @@ func queryRateLimitWindowRefs(ctx context.Context, db *sql.DB, window queryWindo
 	query := `
 select scope, reset_at, max(window_minutes), count(*)
 from (
-  select 'primary' as scope, primary_reset_at as reset_at, primary_window_minutes as window_minutes, ts
+  select 'five_hour' as scope, primary_reset_at as reset_at, primary_window_minutes as window_minutes, ts
   from codex_rate_limit_events
-  where ts >= ? and primary_reset_at > 0
+  where ts >= ? and primary_reset_at > 0 and primary_window_minutes = 300
   union all
-  select 'secondary' as scope, secondary_reset_at as reset_at, secondary_window_minutes as window_minutes, ts
+  select 'weekly' as scope, secondary_reset_at as reset_at, secondary_window_minutes as window_minutes, ts
   from codex_rate_limit_events
-  where ts >= ? and secondary_reset_at > 0
+  where ts >= ? and secondary_reset_at > 0 and secondary_window_minutes = 10080
 ) windows
 where ts >= ?
 `
@@ -1511,8 +1530,10 @@ func estimateRateLimitWindow(ctx context.Context, db *sql.DB, ref rateLimitWindo
 
 func queryRateLimitWindowEvents(ctx context.Context, db *sql.DB, ref rateLimitWindowRef) ([]rateLimitEstimateEvent, error) {
 	resetColumn := "primary_reset_at"
-	if ref.scope == "secondary" {
+	windowColumn := "primary_window_minutes"
+	if ref.scope == "weekly" {
 		resetColumn = "secondary_reset_at"
+		windowColumn = "secondary_window_minutes"
 	}
 	query := fmt.Sprintf(`
 select
@@ -1525,10 +1546,10 @@ select
   primary_used_percent,
   secondary_used_percent
 from codex_rate_limit_events
-where %s = ? and %s > 0
+where %s = ? and %s > 0 and %s = ?
 order by julianday(ts) asc, id asc
-`, resetColumn, resetColumn)
-	rows, err := db.QueryContext(ctx, query, ref.resetAt)
+`, resetColumn, resetColumn, windowColumn)
+	rows, err := db.QueryContext(ctx, query, ref.resetAt, ref.windowMinutes)
 	if err != nil {
 		return nil, fmt.Errorf("query %s rate limit estimate events: %w", ref.scope, err)
 	}
@@ -1600,7 +1621,7 @@ order by julianday(ts) asc, id asc
 }
 
 func rateLimitPercentForScope(event rateLimitEstimateEvent, scope string) int {
-	if scope == "secondary" {
+	if scope == "weekly" {
 		return event.secondaryUsedPercent
 	}
 	return event.primaryUsedPercent

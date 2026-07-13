@@ -10,6 +10,8 @@ import (
 
 const SchemaVersion = 1
 const RateLimitsEventType = "codex_rate_limits"
+const FiveHourWindowMinutes int64 = 300
+const WeeklyWindowMinutes int64 = 10080
 
 type DatagramKind int
 
@@ -45,6 +47,35 @@ type Usage struct {
 }
 
 type RateLimits struct {
+	Schema                    int    `json:"schema"`
+	EventType                 string `json:"event_type"`
+	Timestamp                 string `json:"ts"`
+	Source                    string `json:"source"`
+	Transport                 string `json:"transport"`
+	Host                      string `json:"host"`
+	Path                      string `json:"path"`
+	PlanType                  string `json:"plan_type"`
+	Allowed                   bool   `json:"allowed"`
+	LimitReached              bool   `json:"limit_reached"`
+	FiveHourUsedPercent       int64  `json:"five_hour_used_percent"`
+	FiveHourWindowMinutes     int64  `json:"five_hour_window_minutes"`
+	FiveHourResetAfterSeconds int64  `json:"five_hour_reset_after_seconds"`
+	FiveHourResetAt           int64  `json:"five_hour_reset_at"`
+	WeeklyUsedPercent         int64  `json:"weekly_used_percent"`
+	WeeklyWindowMinutes       int64  `json:"weekly_window_minutes"`
+	WeeklyResetAfterSeconds   int64  `json:"weekly_reset_after_seconds"`
+	WeeklyResetAt             int64  `json:"weekly_reset_at"`
+	RawJSON                   string `json:"raw_json"`
+}
+
+type rateLimitWindow struct {
+	UsedPercent       int64
+	WindowMinutes     int64
+	ResetAfterSeconds int64
+	ResetAt           int64
+}
+
+type rateLimitsWire struct {
 	Schema                     int    `json:"schema"`
 	EventType                  string `json:"event_type"`
 	Timestamp                  string `json:"ts"`
@@ -55,6 +86,15 @@ type RateLimits struct {
 	PlanType                   string `json:"plan_type"`
 	Allowed                    bool   `json:"allowed"`
 	LimitReached               bool   `json:"limit_reached"`
+	RawJSON                    string `json:"raw_json"`
+	FiveHourUsedPercent        int64  `json:"five_hour_used_percent"`
+	FiveHourWindowMinutes      int64  `json:"five_hour_window_minutes"`
+	FiveHourResetAfterSeconds  int64  `json:"five_hour_reset_after_seconds"`
+	FiveHourResetAt            int64  `json:"five_hour_reset_at"`
+	WeeklyUsedPercent          int64  `json:"weekly_used_percent"`
+	WeeklyWindowMinutes        int64  `json:"weekly_window_minutes"`
+	WeeklyResetAfterSeconds    int64  `json:"weekly_reset_after_seconds"`
+	WeeklyResetAt              int64  `json:"weekly_reset_at"`
 	PrimaryUsedPercent         int64  `json:"primary_used_percent"`
 	PrimaryWindowMinutes       int64  `json:"primary_window_minutes"`
 	PrimaryResetAfterSeconds   int64  `json:"primary_reset_after_seconds"`
@@ -63,7 +103,44 @@ type RateLimits struct {
 	SecondaryWindowMinutes     int64  `json:"secondary_window_minutes"`
 	SecondaryResetAfterSeconds int64  `json:"secondary_reset_after_seconds"`
 	SecondaryResetAt           int64  `json:"secondary_reset_at"`
-	RawJSON                    string `json:"raw_json"`
+}
+
+func (r *RateLimits) UnmarshalJSON(data []byte) error {
+	var wire rateLimitsWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = RateLimits{
+		Schema: wire.Schema, EventType: wire.EventType, Timestamp: wire.Timestamp, Source: wire.Source,
+		Transport: wire.Transport, Host: wire.Host, Path: wire.Path, PlanType: wire.PlanType,
+		Allowed: wire.Allowed, LimitReached: wire.LimitReached, RawJSON: wire.RawJSON,
+	}
+	fiveHour, weekly := classifyRateLimitWindows(
+		rateLimitWindow{wire.FiveHourUsedPercent, wire.FiveHourWindowMinutes, wire.FiveHourResetAfterSeconds, wire.FiveHourResetAt},
+		rateLimitWindow{wire.WeeklyUsedPercent, wire.WeeklyWindowMinutes, wire.WeeklyResetAfterSeconds, wire.WeeklyResetAt},
+		rateLimitWindow{wire.PrimaryUsedPercent, wire.PrimaryWindowMinutes, wire.PrimaryResetAfterSeconds, wire.PrimaryResetAt},
+		rateLimitWindow{wire.SecondaryUsedPercent, wire.SecondaryWindowMinutes, wire.SecondaryResetAfterSeconds, wire.SecondaryResetAt},
+	)
+	r.FiveHourUsedPercent, r.FiveHourWindowMinutes, r.FiveHourResetAfterSeconds, r.FiveHourResetAt = fiveHour.UsedPercent, fiveHour.WindowMinutes, fiveHour.ResetAfterSeconds, fiveHour.ResetAt
+	r.WeeklyUsedPercent, r.WeeklyWindowMinutes, r.WeeklyResetAfterSeconds, r.WeeklyResetAt = weekly.UsedPercent, weekly.WindowMinutes, weekly.ResetAfterSeconds, weekly.ResetAt
+	return nil
+}
+
+func classifyRateLimitWindows(windows ...rateLimitWindow) (rateLimitWindow, rateLimitWindow) {
+	var fiveHour, weekly rateLimitWindow
+	for _, window := range windows {
+		switch window.WindowMinutes {
+		case FiveHourWindowMinutes:
+			if fiveHour.ResetAt == 0 {
+				fiveHour = window
+			}
+		case WeeklyWindowMinutes:
+			if weekly.ResetAt == 0 {
+				weekly = window
+			}
+		}
+	}
+	return fiveHour, weekly
 }
 
 func Decode(data []byte) (Usage, error) {
@@ -148,7 +225,7 @@ func (r RateLimits) Validate() error {
 	if strings.TrimSpace(r.RawJSON) == "" {
 		return errors.New("missing raw_json")
 	}
-	if r.PrimaryResetAt <= 0 && r.SecondaryResetAt <= 0 {
+	if r.FiveHourResetAt <= 0 && r.WeeklyResetAt <= 0 {
 		return errors.New("rate limits event missing reset_at values")
 	}
 	return nil
