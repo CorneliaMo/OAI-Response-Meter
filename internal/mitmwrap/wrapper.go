@@ -21,6 +21,7 @@ type Config struct {
 	QueueSize     int
 	Quiet         bool
 	UpstreamProxy string
+	FlowFile      string
 }
 
 func DefaultMitmdumpPath(root string) string {
@@ -69,6 +70,9 @@ func Command(ctx context.Context, config Config) (*exec.Cmd, error) {
 	}
 	if config.UpstreamProxy != "" {
 		args = append(args, "--mode", "upstream:"+config.UpstreamProxy)
+	}
+	if config.FlowFile != "" {
+		args = append(args, "--save-stream-file", config.FlowFile)
 	}
 	args = append(args, "--set", "allow_hosts="+DefaultAllowHostsPattern)
 	if config.Quiet {

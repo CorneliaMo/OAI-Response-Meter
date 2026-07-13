@@ -62,6 +62,7 @@ func TestCommandBuildsMitmdumpArgsAndEnv(t *testing.T) {
 		QueueSize:     123,
 		Quiet:         true,
 		UpstreamProxy: "http://127.0.0.1:7890",
+		FlowFile:      "/tmp/oai-meter.flows",
 	})
 	if err != nil {
 		t.Fatalf("Command() error = %v", err)
@@ -72,6 +73,7 @@ func TestCommandBuildsMitmdumpArgsAndEnv(t *testing.T) {
 		"--listen-host", "127.0.0.1",
 		"--listen-port", "18080",
 		"--mode", "upstream:http://127.0.0.1:7890",
+		"--save-stream-file", "/tmp/oai-meter.flows",
 		"--set", "allow_hosts=" + DefaultAllowHostsPattern,
 		"--quiet",
 	}

@@ -23,6 +23,7 @@ func TestParseRunConfig(t *testing.T) {
 		"--no-dashboard",
 		"--queue-size", "123",
 		"--verbose",
+		"--flow-file", "/tmp/oai-meter.flows",
 	})
 	if err != nil {
 		t.Fatalf("parseRunConfig() error = %v", err)
@@ -41,6 +42,9 @@ func TestParseRunConfig(t *testing.T) {
 	}
 	if !config.Verbose {
 		t.Fatal("Verbose = false, want true")
+	}
+	if config.FlowFile != "/tmp/oai-meter.flows" {
+		t.Fatalf("FlowFile = %q", config.FlowFile)
 	}
 }
 

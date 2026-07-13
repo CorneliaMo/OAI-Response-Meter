@@ -82,6 +82,7 @@ Useful flags:
 --dashboard-port dashboard listen port, default 8081
 --queue-size    Python addon queue size, default 10000
 --verbose       print sanitized debug logs
+--flow-file     write complete mitmproxy flows to this file
 ```
 
 `--verbose` prints local meter logs such as the selected paths, received usage
@@ -91,6 +92,20 @@ cookies, or full WebSocket messages.
 
 The wrapper starts `mitmdump` in quiet mode so raw mitmproxy traffic logs do not
 mix into the meter output.
+
+## Flow Archive
+
+Pass `--flow-file /path/to/capture.flows` to have mitmdump stream every flow to
+its native flow-file format while the meter addon continues recording usage:
+
+```bash
+go run ./cmd/oai-meter run --flow-file data/capture.flows
+```
+
+The output can be opened by mitmproxy tooling, for example
+`mitmweb -r data/capture.flows`. Use a leading `+` to append to an existing
+file. Flow archives may contain complete request and response data, including
+credentials and prompts, so protect the file accordingly.
 
 ## Upstream Proxy
 

@@ -36,6 +36,7 @@ type RunConfig struct {
 	Prices        string
 	QueueSize     int
 	Verbose       bool
+	FlowFile      string
 	ConfigPath    string
 	UpstreamProxy string
 }
@@ -89,6 +90,9 @@ func Run(ctx context.Context, config RunConfig) error {
 			fmt.Fprintf(os.Stderr, "[app] prices=%s loaded=true models=%d currency=%s\n", config.Prices, len(priceCatalog.Models), priceCatalog.Currency)
 		}
 		fmt.Fprintf(os.Stderr, "[app] proxy listen=%s:%s queue_size=%d\n", config.ListenHost, config.ListenPort, config.QueueSize)
+		if config.FlowFile != "" {
+			fmt.Fprintf(os.Stderr, "[app] flow_file=%s\n", config.FlowFile)
+		}
 		if config.UpstreamProxy == "" {
 			fmt.Fprintln(os.Stderr, "[app] upstream_proxy=<none>")
 		} else {
@@ -145,6 +149,7 @@ func Run(ctx context.Context, config RunConfig) error {
 		QueueSize:     config.QueueSize,
 		Quiet:         true,
 		UpstreamProxy: config.UpstreamProxy,
+		FlowFile:      config.FlowFile,
 	})
 	if err != nil {
 		stop()
@@ -184,6 +189,7 @@ func parseRunConfig(args []string) (RunConfig, error) {
 	fs.StringVar(&config.DashboardPort, "dashboard-port", "8081", "dashboard listen port")
 	fs.IntVar(&config.QueueSize, "queue-size", 10000, "addon queue size")
 	fs.BoolVar(&config.Verbose, "verbose", false, "print detailed sanitized debug logs")
+	fs.StringVar(&config.FlowFile, "flow-file", "", "write mitmproxy flows to this file")
 	if err := fs.Parse(args); err != nil {
 		return RunConfig{}, err
 	}
