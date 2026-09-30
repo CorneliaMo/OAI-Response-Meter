@@ -1249,10 +1249,10 @@ type windowEstimateResult struct {
 }
 
 type rateLimitMemoryEntry struct {
-	result  windowEstimateResult
-	pairs   int
-	skipped int
-	expires time.Time
+	result     windowEstimateResult
+	pairs      int
+	skipped    int
+	refreshing bool
 }
 
 type rateLimitMemoryCache struct {
@@ -1269,11 +1269,6 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 	if cache != nil {
 		cache.mu.Lock()
 		defer cache.mu.Unlock()
-		for key, entry := range cache.entries {
-			if !now.Before(entry.expires) {
-				delete(cache.entries, key)
-			}
-		}
 	}
 	refs, err := queryRateLimitWindowRefs(ctx, db, window)
 	if err != nil {
@@ -1291,9 +1286,14 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 		}
 		if !ok {
 			key := fmt.Sprintf("%s/%d/%s", ref.scope, ref.resetAt, priceSignature)
-			if cache != nil {
-				if entry, exists := cache.entries[key]; exists && now.Before(entry.expires) {
+			if cache != nil && !shouldCacheRateLimitWindow(ref, now) {
+				if entry, exists := cache.entries[key]; exists {
 					result, pairs, skipped, ok = entry.result, entry.pairs, entry.skipped, true
+					if !entry.refreshing {
+						entry.refreshing = true
+						cache.entries[key] = entry
+						go cache.refresh(db, ref, catalog, key)
+					}
 				}
 			}
 			if !ok {
@@ -1306,9 +1306,21 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 				if err := writeRateLimitEstimateCache(ctx, db, ref, priceSignature, result, pairs, skipped); err != nil {
 					return nil, err
 				}
+				if cache != nil {
+					delete(cache.entries, key)
+				}
 			} else if cache != nil {
 				if !ok {
-					cache.entries[key] = rateLimitMemoryEntry{result: result, pairs: pairs, skipped: skipped, expires: now.Add(30 * time.Second)}
+					// Bound memory across long-running sessions and changing price catalogs.
+					if len(cache.entries) >= 256 {
+						for oldKey, entry := range cache.entries {
+							if !entry.refreshing {
+								delete(cache.entries, oldKey)
+								break
+							}
+						}
+					}
+					cache.entries[key] = rateLimitMemoryEntry{result: result, pairs: pairs, skipped: skipped}
 				}
 			}
 		}
@@ -1336,6 +1348,24 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 		estimates = append(estimates, estimate)
 	}
 	return estimates, nil
+}
+
+func (cache *rateLimitMemoryCache) refresh(db *sql.DB, ref rateLimitWindowRef, catalog *pricing.Catalog, key string) {
+	// Refresh survives the HTTP request, but cannot run indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	result, pairs, skipped, err := estimateRateLimitWindow(ctx, db, ref, catalog)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	entry, exists := cache.entries[key]
+	if !exists {
+		return
+	}
+	if err == nil {
+		entry.result, entry.pairs, entry.skipped = result, pairs, skipped
+	}
+	entry.refreshing = false
+	cache.entries[key] = entry
 }
 
 func readRateLimitEstimateCache(ctx context.Context, db *sql.DB, ref rateLimitWindowRef, priceSignature string) (windowEstimateResult, int, int, bool, error) {

@@ -652,7 +652,7 @@ func TestRateLimitWindowEstimateCacheSkipsActiveWindow(t *testing.T) {
 	}
 }
 
-func TestActiveWindowMemoryCacheExpiresAndDoesNotPersist(t *testing.T) {
+func TestActiveWindowMemoryCacheReturnsOldResultAndRefreshes(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	resetAt := now.Add(time.Hour).Unix()
 	catalog := &pricing.Catalog{Currency: "USD", Unit: pricing.UnitPer1MTokens, Models: map[string]pricing.Rate{"gpt-test": {Input: 1, Output: 1}}}
@@ -669,15 +669,20 @@ func TestActiveWindowMemoryCacheExpiresAndDoesNotPersist(t *testing.T) {
 	if _, err := db.ExecContext(context.Background(), `delete from usage_events`); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(5 * time.Second)
 	second := findEstimate(t, requestRateLimits(t, handler).Estimates, "weekly", resetAt)
 	if second.TotalVisibleCost != first.TotalVisibleCost {
-		t.Fatal("active window was recomputed within TTL")
+		t.Fatal("cache hit did not return existing result")
 	}
-	now = now.Add(25 * time.Second)
-	third := findEstimate(t, requestRateLimits(t, handler).Estimates, "weekly", resetAt)
-	if third.TotalVisibleCost != 0 {
-		t.Fatal("active window cache did not expire")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		third := findEstimate(t, requestRateLimits(t, handler).Estimates, "weekly", resetAt)
+		if third.TotalVisibleCost == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background refresh did not update cached result")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	var count int
 	if err := db.QueryRow(`select count(*) from rate_limit_window_estimate_cache`).Scan(&count); err != nil || count != 0 {
