@@ -270,6 +270,7 @@ func (s *Store) init(ctx context.Context) error {
   created_at text not null default current_timestamp
 )`,
 		`create index if not exists idx_usage_events_ts on usage_events(ts)`,
+		`create index if not exists idx_usage_events_route_time on usage_events(source, transport, host, path, julianday(ts))`,
 		`create index if not exists idx_usage_events_model_ts on usage_events(model, ts)`,
 		`alter table usage_events add column previous_response_id text not null default ''`,
 		`alter table usage_events add column chain_root_response_id text not null default ''`,

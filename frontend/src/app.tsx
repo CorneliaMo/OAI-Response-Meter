@@ -236,8 +236,13 @@ export function App() {
       return;
     }
     let cancelled = false;
+    let inFlight = false;
 
     async function load() {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
       try {
         setLoading((current) => (hasTabData(activeTab, overviewData, historyData, limitsData) ? current : true));
         if (activeTab === "overview") {
@@ -292,6 +297,7 @@ export function App() {
         }
         setError(loadError instanceof Error ? loadError.message : t.failedToLoad);
       } finally {
+        inFlight = false;
         if (!cancelled) {
           setLoading(false);
         }

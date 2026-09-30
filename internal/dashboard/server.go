@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cornelia/oai-response-meter/internal/event"
@@ -317,10 +318,11 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 	}
 
 	server := apiServer{
-		db:       db,
-		now:      now,
-		staticFS: staticFS,
-		pricing:  config.Pricing,
+		db:            db,
+		now:           now,
+		staticFS:      staticFS,
+		pricing:       config.Pricing,
+		estimateCache: &rateLimitMemoryCache{entries: make(map[string]rateLimitMemoryEntry)},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", server.handleSummary)
@@ -336,6 +338,9 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 }
 
 func initRateLimitEstimateCache(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `create index if not exists idx_usage_events_route_time on usage_events(source, transport, host, path, julianday(ts))`); err != nil {
+		return fmt.Errorf("init usage interval index: %w", err)
+	}
 	_, err := db.ExecContext(ctx, `create table if not exists rate_limit_window_estimate_cache (
   scope text not null,
   reset_at integer not null,
@@ -368,10 +373,11 @@ func initRateLimitEstimateCache(ctx context.Context, db *sql.DB) error {
 }
 
 type apiServer struct {
-	db       *sql.DB
-	now      func() time.Time
-	staticFS fs.FS
-	pricing  *pricing.Catalog
+	db            *sql.DB
+	now           func() time.Time
+	staticFS      fs.FS
+	pricing       *pricing.Catalog
+	estimateCache *rateLimitMemoryCache
 }
 
 func (s apiServer) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -499,7 +505,7 @@ func (s apiServer) handleRateLimits(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset, s.pricing, s.now().UTC())
+	resp, err := queryRateLimits(r.Context(), s.db, window, limit, offset, s.pricing, s.now().UTC(), s.estimateCache)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1076,7 +1082,7 @@ order by ts asc
 	return resp, nil
 }
 
-func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, catalog *pricing.Catalog, now time.Time) (RateLimitsResponse, error) {
+func queryRateLimits(ctx context.Context, db *sql.DB, window queryWindow, limit, offset int, catalog *pricing.Catalog, now time.Time, caches ...*rateLimitMemoryCache) (RateLimitsResponse, error) {
 	pointsQuery := `
 select
   ts,
@@ -1196,7 +1202,7 @@ limit ? offset ?
 	if err := itemRows.Err(); err != nil {
 		return RateLimitsResponse{}, fmt.Errorf("iterate rate limit items: %w", err)
 	}
-	estimates, err := queryRateLimitWindowEstimates(ctx, db, window, catalog, now)
+	estimates, err := queryRateLimitWindowEstimates(ctx, db, window, catalog, now, caches...)
 	if err != nil {
 		return RateLimitsResponse{}, err
 	}
@@ -1242,7 +1248,33 @@ type windowEstimateResult struct {
 	message            string
 }
 
-func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog, now time.Time) ([]RateLimitWindowEstimate, error) {
+type rateLimitMemoryEntry struct {
+	result  windowEstimateResult
+	pairs   int
+	skipped int
+	expires time.Time
+}
+
+type rateLimitMemoryCache struct {
+	mu      sync.Mutex
+	entries map[string]rateLimitMemoryEntry
+}
+
+func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window queryWindow, catalog *pricing.Catalog, now time.Time, caches ...*rateLimitMemoryCache) ([]RateLimitWindowEstimate, error) {
+	var cache *rateLimitMemoryCache
+	if len(caches) > 0 {
+		cache = caches[0]
+	}
+	// Serialize cache misses so overlapping requests do not estimate the same window twice.
+	if cache != nil {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		for key, entry := range cache.entries {
+			if !now.Before(entry.expires) {
+				delete(cache.entries, key)
+			}
+		}
+	}
 	refs, err := queryRateLimitWindowRefs(ctx, db, window)
 	if err != nil {
 		return nil, err
@@ -1250,18 +1282,33 @@ func queryRateLimitWindowEstimates(ctx context.Context, db *sql.DB, window query
 	priceSignature := rateLimitEstimatePriceSignature(catalog)
 	estimates := make([]RateLimitWindowEstimate, 0, len(refs))
 	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, pairs, skipped, ok, err := readRateLimitEstimateCache(ctx, db, ref, priceSignature)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			result, pairs, skipped, err = estimateRateLimitWindow(ctx, db, ref, catalog)
-			if err != nil {
-				return nil, err
+			key := fmt.Sprintf("%s/%d/%s", ref.scope, ref.resetAt, priceSignature)
+			if cache != nil {
+				if entry, exists := cache.entries[key]; exists && now.Before(entry.expires) {
+					result, pairs, skipped, ok = entry.result, entry.pairs, entry.skipped, true
+				}
+			}
+			if !ok {
+				result, pairs, skipped, err = estimateRateLimitWindow(ctx, db, ref, catalog)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if shouldCacheRateLimitWindow(ref, now) {
 				if err := writeRateLimitEstimateCache(ctx, db, ref, priceSignature, result, pairs, skipped); err != nil {
 					return nil, err
+				}
+			} else if cache != nil {
+				if !ok {
+					cache.entries[key] = rateLimitMemoryEntry{result: result, pairs: pairs, skipped: skipped, expires: now.Add(30 * time.Second)}
 				}
 			}
 		}
