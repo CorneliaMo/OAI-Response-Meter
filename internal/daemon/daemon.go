@@ -45,6 +45,7 @@ type EventStore interface {
 	WriteBatch(context.Context, []event.Usage) (store.WriteResult, error)
 	WriteRateLimitBatch(context.Context, []event.RateLimits) (store.WriteResult, error)
 	WriteSpeedBatch(context.Context, []event.Speed) (store.WriteResult, error)
+	PruneActiveSpeeds(context.Context, time.Time) error
 }
 
 func New(config Config, sink EventStore) (*Daemon, error) {
@@ -90,6 +91,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(d.config.FlushInterval)
 	defer ticker.Stop()
+	cleanup := func() {
+		if err := d.store.PruneActiveSpeeds(ctx, time.Now()); err != nil {
+			d.logf("prune active response speeds failed error=%v", err)
+		}
+	}
+	cleanup()
+	cleanupTicker := time.NewTicker(time.Minute)
+	defer cleanupTicker.Stop()
 	usageBatch := make([]event.Usage, 0, d.config.BatchSize)
 	rateLimitBatch := make([]event.RateLimits, 0, d.config.BatchSize)
 	speedBatch := make([]event.Speed, 0, d.config.BatchSize)
@@ -145,6 +154,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 		case <-ticker.C:
 			flush()
+		case <-cleanupTicker.C:
+			cleanup()
 		}
 	}
 }

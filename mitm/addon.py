@@ -21,6 +21,7 @@ class UsageMeterAddon:
         self.queue_size = _env_int(QUEUE_SIZE_ENV, DEFAULT_QUEUE_SIZE)
         self.queue: Optional[asyncio.Queue[dict[str, Any]]] = None
         self.sender_task: Optional[asyncio.Task[None]] = None
+        self.cleanup_task: Optional[asyncio.Task[None]] = None
         self.dropped_queue_full = 0
         self.dropped_send_error = 0
         self.sent = 0
@@ -29,10 +30,18 @@ class UsageMeterAddon:
     def running(self) -> None:
         self.queue = asyncio.Queue(maxsize=self.queue_size)
         self.sender_task = asyncio.create_task(self._sender())
+        self.cleanup_task = asyncio.create_task(self._cleanup_speeds())
 
     def done(self) -> None:
         if self.sender_task is not None:
             self.sender_task.cancel()
+        if self.cleanup_task is not None:
+            self.cleanup_task.cancel()
+
+    async def _cleanup_speeds(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            self.speed_tracker.prune(time.time())
 
     def response(self, flow: Any) -> None:
         event = extract_http_usage(flow)
@@ -162,6 +171,15 @@ class ResponseSpeedTracker:
     def forget(self, flow: Any) -> None:
         self.flows.pop(str(getattr(flow, "id", id(flow))), None)
 
+    def prune(self, now: float) -> None:
+        for flow_id, state in list(self.flows.items()):
+            for response_id, response in list(state["active"].items()):
+                if now - response["created"] >= 3600:
+                    self._remove(state, response_id)
+            state["pending"] = deque((item for item in state["pending"] if now - item[0] < 3600), maxlen=32)
+            if not state["active"] and not state["pending"]:
+                self.flows.pop(flow_id, None)
+
     def observe(self, flow: Any, payload: dict[str, Any], message: Any) -> list[dict[str, Any]]:
         flow_id = str(getattr(flow, "id", id(flow)))
         timestamp = getattr(message, "timestamp", None)
@@ -172,7 +190,7 @@ class ResponseSpeedTracker:
             self.flows.popitem(last=False)
         active = state["active"]
         for response_id, response in list(active.items()):
-            if now - response["created"] > 3600:
+            if now - response["created"] >= 3600:
                 self._remove(state, response_id)
 
         kind = payload.get("type", "")

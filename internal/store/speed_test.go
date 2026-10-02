@@ -7,9 +7,44 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cornelia/oai-response-meter/internal/event"
 )
+
+func TestPruneActiveSpeedsTTL(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := Open(ctx, filepath.Join(dir, "events.db"), filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		id    string
+		age   time.Duration
+		final bool
+	}{
+		{"expired", time.Hour, false}, {"recent", 59 * time.Minute, false}, {"final", 2 * time.Hour, true},
+	} {
+		created := now.Add(-tc.age)
+		item := event.Speed{Schema: 1, EventType: event.SpeedEventType, Timestamp: created.Format(time.RFC3339Nano), Transport: "websocket", Host: "chatgpt.com", ResponseID: tc.id, CreatedAt: created.Format(time.RFC3339Nano), UpdatedAt: created.Add(time.Second).Format(time.RFC3339Nano), Completed: tc.final}
+		if _, err := s.WriteSpeedBatch(ctx, []event.Speed{item}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PruneActiveSpeeds(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.db.QueryRow(`select count(*) from response_speed_events`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if err := s.db.QueryRow(`select count(*) from response_speed_events where response_id='expired'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expired=%d err=%v", count, err)
+	}
+}
 
 func TestSpeedSnapshotsOrderingAndJSONL(t *testing.T) {
 	ctx := context.Background()

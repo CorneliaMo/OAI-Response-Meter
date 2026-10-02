@@ -11,6 +11,16 @@ class Obj:
 
 
 class AddonTest(unittest.TestCase):
+    def test_speed_ttl_prunes_idle_flow_without_new_messages(self):
+        tracker = ResponseSpeedTracker()
+        flow = Obj(id="idle", request=Obj(host="api.openai.com", path="/v1/responses"))
+        tracker.observe(flow, {"type": "response.created", "response": {"id": "expired"}}, Obj(timestamp=1000, from_client=False))
+        tracker.prune(4599)
+        self.assertIn("idle", tracker.flows)
+        tracker.prune(4600)
+        self.assertNotIn("idle", tracker.flows)
+        self.assertEqual(tracker.observe(flow, {"type": "response.output_text.delta", "delta": "late"}, Obj(timestamp=4601, from_client=False)), [])
+
     def test_speed_lifecycle_keeps_deltas_distinct_from_tokens(self):
         tracker = ResponseSpeedTracker()
         flow = Obj(id="speed-flow", request=Obj(host="api.openai.com", path="/v1/responses"))

@@ -18,6 +18,13 @@ const speedTableSQL = `create table if not exists response_speed_events (
  output_characters integer not null, output_items integer not null
 )`
 
+const ActiveSpeedTTL = time.Hour
+
+func (s *Store) PruneActiveSpeeds(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `delete from response_speed_events where completed = 0 and julianday(created_at) <= julianday(?)`, now.Add(-ActiveSpeedTTL).Format(time.RFC3339Nano))
+	return err
+}
+
 // InitSpeedSchema also permits dashboards to open databases predating speed events.
 func InitSpeedSchema(ctx context.Context, db *sql.DB) error {
 	for _, statement := range []string{speedTableSQL,
@@ -43,6 +50,12 @@ func (s *Store) WriteSpeedBatch(ctx context.Context, events []event.Speed) (Writ
 	for _, item := range events {
 		if err := item.Validate(); err != nil {
 			return WriteResult{}, err
+		}
+		created, _ := time.Parse(time.RFC3339Nano, item.CreatedAt)
+		updatedAt, _ := time.Parse(time.RFC3339Nano, item.UpdatedAt)
+		if !item.Completed && updatedAt.Sub(created) >= ActiveSpeedTTL {
+			result.Duplicates++
+			continue
 		}
 		var updated string
 		var completed bool

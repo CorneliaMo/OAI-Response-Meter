@@ -122,7 +122,7 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			}
 		}
 		if !completed {
-			if !updated.Before(now.Add(-10*time.Minute)) && !updated.After(now) {
+			if created.After(now.Add(-store.ActiveSpeedTTL)) && !updated.Before(now.Add(-10*time.Minute)) && !updated.After(now) {
 				resp.Active = append(resp.Active, item)
 			}
 			continue

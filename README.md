@@ -224,7 +224,10 @@ when the corresponding client request was observed. Each response contributes
 one sample to the minute containing its observed creation time; multiple samples
 for the same minute and canonical model use an arithmetic mean of their speeds.
 
-Active responses emit metadata snapshots at most once per second. Text and tool
+Active responses emit metadata snapshots at most once per second. Active response
+progress has a 60-minute TTL from response creation: the addon and daemon prune
+unfinished state every minute, and the daemon also prunes on startup. Completed
+history is retained. Text and tool
 input deltas update character counts, while completed output items update item
 counts. These events usually lack token usage, so live character throughput is
 shown separately from token throughput. Provisional token throughput is shown
