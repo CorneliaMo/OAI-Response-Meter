@@ -114,6 +114,68 @@ func TestSpeedsEmptyLegacyDatabase(t *testing.T) {
 	}
 }
 
+func TestSpeedsRecentAndMultipleModelFilters(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sink, err := store.Open(ctx, filepath.Join(dir, "events.db"), filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	items := []event.Speed{}
+	for i := 0; i < 30; i++ {
+		model := "gpt-5"
+		if i%2 == 0 {
+			model = "gpt-5-mini-2026-03-17"
+		}
+		created := now.Add(-time.Duration(i+1) * time.Minute)
+		items = append(items, event.Speed{Schema: 1, EventType: event.SpeedEventType, Timestamp: created.Format(time.RFC3339Nano), Transport: "websocket", Host: "chatgpt.com", ResponseID: fmt.Sprintf("r-%02d", i), Model: model, CreatedAt: created.Format(time.RFC3339Nano), UpdatedAt: created.Add(time.Second).Format(time.RFC3339Nano), Completed: true, OutputTokens: int64(i + 1), OutputTokensKnown: true})
+	}
+	if _, err := sink.WriteSpeedBatch(ctx, items); err != nil {
+		t.Fatal(err)
+	}
+	handler, db, err := newHandler(Config{DBPath: filepath.Join(dir, "events.db")}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	query := func(path string) SpeedsResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != 200 {
+			t.Fatalf("status=%d %s", rec.Code, rec.Body.String())
+		}
+		var response SpeedsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	all := query("/api/speeds?range=day&model=gpt-5&model=gpt-5-mini")
+	if len(all.Recent) != 20 || all.Recent[0].ResponseID != "r-00" || all.Recent[19].ResponseID != "r-19" || all.CompletedRequests != 30 || len(all.Models) != 2 {
+		t.Fatalf("all=%+v", all)
+	}
+	mini := query("/api/speeds?range=day&model=gpt-5-mini")
+	if len(mini.Recent) != 15 || mini.CompletedRequests != 15 || len(mini.Models) != 2 {
+		t.Fatalf("mini=%+v", mini)
+	}
+	for _, item := range mini.Recent {
+		if item.Model != "gpt-5-mini" {
+			t.Fatalf("wrong model=%s", item.Model)
+		}
+	}
+	empty := query("/api/speeds?range=day&model=missing")
+	if len(empty.Recent) != 0 || len(empty.Points) != 0 || len(empty.Models) != 2 {
+		t.Fatalf("empty=%+v", empty)
+	}
+	outside := query("/api/speeds?from=2026-10-02&to=2026-10-02&tz=UTC")
+	if len(outside.Recent) != 0 {
+		t.Fatalf("outside=%+v", outside)
+	}
+}
+
 func TestSpeedsDoesNotFabricateUsageTiming(t *testing.T) {
 	handler := testHandler(t)
 	rec := httptest.NewRecorder()

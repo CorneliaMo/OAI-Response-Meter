@@ -40,6 +40,8 @@ type ActiveSpeed struct {
 type SpeedsResponse struct {
 	Points             []SpeedPoint  `json:"points"`
 	Active             []ActiveSpeed `json:"active"`
+	Recent             []ActiveSpeed `json:"recent"`
+	Models             []string      `json:"models"`
 	CompletedRequests  int           `json:"completed_requests"`
 	AvgTokensPerSecond *float64      `json:"avg_tokens_per_second"`
 }
@@ -51,7 +53,7 @@ func (s apiServer) handleSpeeds(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := querySpeeds(r.Context(), s.db, window, now)
+	resp, err := querySpeeds(r.Context(), s.db, window, now, r.URL.Query()["model"]...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -59,8 +61,13 @@ func (s apiServer) handleSpeeds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.Time) (SpeedsResponse, error) {
-	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}}
+func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.Time, models ...string) (SpeedsResponse, error) {
+	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}, Recent: []ActiveSpeed{}, Models: []string{}}
+	selected := map[string]bool{}
+	for _, model := range models {
+		selected[pricing.CanonicalModelName(model)] = true
+	}
+	available := map[string]bool{}
 	// Include live snapshots independently of the historical range. Compare parsed
 	// timestamps to retain nanosecond precision and handle arbitrary RFC3339 offsets.
 	query := `select response_id,model,request_at,created_at,updated_at,completed,output_tokens,output_tokens_known,output_characters,output_items from response_speed_events where (completed = 1 and julianday(created_at) >= julianday(?)`
@@ -104,6 +111,13 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 		if item.Model == "" {
 			item.Model = "(unknown)"
 		}
+		inRange := !created.Before(window.cutoff) && (window.end == nil || created.Before(*window.end))
+		if completed && inRange && item.OutputTokensKnown {
+			available[item.Model] = true
+		}
+		if len(selected) > 0 && !selected[item.Model] {
+			continue
+		}
 		duration := updated.Sub(created).Seconds()
 		item.DurationMS = duration * 1000
 		if requestAt != "" {
@@ -127,8 +141,22 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			}
 			continue
 		}
-		if created.Before(window.cutoff) || (window.end != nil && !created.Before(*window.end)) {
+		if !inRange {
 			continue
+		}
+		if item.OutputTokensKnown {
+			resp.Recent = append(resp.Recent, item)
+			sort.Slice(resp.Recent, func(i, j int) bool {
+				a, _ := time.Parse(time.RFC3339Nano, resp.Recent[i].UpdatedAt)
+				b, _ := time.Parse(time.RFC3339Nano, resp.Recent[j].UpdatedAt)
+				if a.Equal(b) {
+					return resp.Recent[i].ResponseID < resp.Recent[j].ResponseID
+				}
+				return a.After(b)
+			})
+			if len(resp.Recent) > 20 {
+				resp.Recent = resp.Recent[:20]
+			}
 		}
 		if item.TokensPerSecond == nil || item.OutputTokens == 0 {
 			continue
@@ -154,6 +182,10 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 	if err := rows.Err(); err != nil {
 		return resp, err
 	}
+	for model := range available {
+		resp.Models = append(resp.Models, model)
+	}
+	sort.Strings(resp.Models)
 	known := 0
 	for _, group := range groups {
 		point := group.point

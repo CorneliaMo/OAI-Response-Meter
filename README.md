@@ -223,6 +223,10 @@ reported in output usage. Request-to-completion latency is recorded separately
 when the corresponding client request was observed. Each response contributes
 one sample to the minute containing its observed creation time; multiple samples
 for the same minute and canonical model use an arithmetic mean of their speeds.
+The speed tab supports multiple model selections and the shared date-range
+filter. It lists the latest 20 completed responses within the creation-time
+range, ordered by completion time. The chart uses equally spaced categories
+for minutes with measurements only; missing minutes do not consume axis space.
 
 Active responses emit metadata snapshots at most once per second. Active response
 progress has a 60-minute TTL from response creation: the addon and daemon prune

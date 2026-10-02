@@ -205,6 +205,8 @@ type ActiveResponse = {
 type SpeedsResponse = {
   points: SpeedPoint[];
   active: ActiveResponse[];
+  recent: ActiveResponse[];
+  models: string[];
   completed_requests: number;
   avg_tokens_per_second: number | null;
 };
@@ -227,6 +229,7 @@ export function App() {
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [limitsData, setLimitsData] = useState<RateLimitsResponse | null>(null);
   const [speedsData, setSpeedsData] = useState<SpeedsResponse | null>(null);
+  const [speedModels, setSpeedModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -312,7 +315,9 @@ export function App() {
           }
           setHistoryData({ models, events });
         } else if (activeTab === "speeds") {
-          const speeds = await requestJSON<SpeedsResponse>(`/api/speeds?${baseQuery}`);
+          const speedQuery = new URLSearchParams(baseQuery);
+          speedModels.forEach((model) => speedQuery.append("model", model));
+          const speeds = await requestJSON<SpeedsResponse>(`/api/speeds?${speedQuery.toString()}`);
           if (cancelled) {
             return;
           }
@@ -359,6 +364,7 @@ export function App() {
     historyTransport,
     limitsOffset,
     range,
+    speedModels,
     t.failedToLoad,
   ]);
 
@@ -489,13 +495,13 @@ export function App() {
           />
         ) : null}
         {activeTab === "limits" && limitsData ? <LimitsPanel data={limitsData} limitsOffset={limitsOffset} locale={locale} onOffsetChange={setLimitsOffset} t={t} /> : null}
-        {activeTab === "speeds" && speedsData ? <SpeedsPanel data={speedsData} locale={locale} t={t} /> : null}
+        {activeTab === "speeds" && speedsData ? <SpeedsPanel data={speedsData} locale={locale} t={t} selectedModels={speedModels} onModelsChange={setSpeedModels} /> : null}
       </section>
     </main>
   );
 }
 
-function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale; t: (typeof messages)[Locale] }) {
+function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data: SpeedsResponse; locale: Locale; t: (typeof messages)[Locale]; selectedModels: string[]; onModelsChange: (models: string[]) => void }) {
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 2 });
   const rate = (value: number | null) => value !== null && Number.isFinite(value) ? number(value) : t.tables.unknown;
   const minute = (value: number) => new Date(value).toLocaleString(locale, {
@@ -503,6 +509,7 @@ function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale
   });
   const option = useMemo<echarts.EChartsCoreOption>(() => {
     const models = [...new Set(data.points.map((point) => point.model))].sort();
+    const minutes = [...new Set(data.points.map((point) => point.time))].sort((a, b) => Date.parse(a) - Date.parse(b));
     return {
       animation: false,
       legend: { type: "scroll", top: 8 },
@@ -511,16 +518,17 @@ function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale
         trigger: "item",
         renderMode: "richText",
         formatter: (params: unknown) => {
-          const item = params as { seriesName: string; data: { value: [number, number | null]; requests?: number } };
-          return `${minute(item.data.value[0])}\n${item.seriesName}: ${rate(item.data.value[1])} ${t.speeds.tokenUnit}\n${t.speeds.samples(formatInt(item.data.requests ?? 0, locale))}`;
+          const item = params as { seriesName: string; name: string; data: { value: number | null; requests?: number } };
+          return `${minute(Date.parse(item.name))}\n${item.seriesName}: ${rate(item.data.value)} ${t.speeds.tokenUnit}\n${t.speeds.samples(formatInt(item.data.requests ?? 0, locale))}`;
         },
       },
       xAxis: {
-        type: "time",
+        type: "category",
+        data: minutes,
         axisLabel: {
           color: "#57606a",
           hideOverlap: true,
-          formatter: (value: number) => new Intl.DateTimeFormat(locale, {
+          formatter: (value: string) => new Intl.DateTimeFormat(locale, {
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
             month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
           }).format(new Date(value)),
@@ -528,15 +536,10 @@ function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale
       },
       yAxis: { type: "value", name: t.speeds.tokenUnit, min: 0, splitLine: { lineStyle: { color: "#d8dee4" } } },
       series: models.map((model) => {
-        const points = data.points.filter((point) => point.model === model).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
-        const values: Array<{ value: [number, number | null]; requests?: number }> = [];
-        // Break lines across unobserved minutes without manufacturing zero-speed samples.
-        points.forEach((point, index) => {
-          const time = Date.parse(point.time);
-          if (index > 0 && time - Date.parse(points[index - 1].time) > 60000) {
-            values.push({ value: [Date.parse(points[index - 1].time) + 60000, null] });
-          }
-          values.push({ value: [time, Number.isFinite(point.avg_tokens_per_second) ? point.avg_tokens_per_second : null], requests: point.requests });
+        const points = new Map(data.points.filter((point) => point.model === model).map((point) => [point.time, point]));
+        const values = minutes.map((time) => {
+          const point = points.get(time);
+          return { value: point && Number.isFinite(point.avg_tokens_per_second) ? point.avg_tokens_per_second : null, requests: point?.requests };
         });
         return { name: model, type: "line", smooth: false, connectNulls: false, showSymbol: true, symbolSize: 6, data: values };
       }),
@@ -544,6 +547,15 @@ function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale
   }, [data.points, locale, t]);
   return (
     <>
+      <section className="panel speedModelFilter">
+        <details>
+          <summary>{t.speeds.models} · {selectedModels.length ? formatInt(selectedModels.length, locale) : t.speeds.allModels}</summary>
+          <div className="speedModelOptions">
+            {[...new Set([...data.models, ...selectedModels])].sort().map((model) => <label key={model}><input type="checkbox" checked={selectedModels.includes(model)} onChange={(event) => onModelsChange(event.target.checked ? [...selectedModels, model] : selectedModels.filter((value) => value !== model))} />{model}</label>)}
+            <button type="button" className="secondaryButton" disabled={!selectedModels.length} onClick={() => onModelsChange([])}>{t.speeds.allModels}</button>
+          </div>
+        </details>
+      </section>
       <section className="kpiGrid speedsKpis">
         <article className="kpiCard"><p>{t.speeds.completed}</p><strong>{formatInt(data.completed_requests, locale)}</strong><span>{t.kpi.recordsInRange}</span></article>
         <article className="kpiCard"><p>{t.speeds.average}</p><strong>{rate(data.avg_tokens_per_second)}</strong><span>{t.speeds.tokenUnit}</span></article>
@@ -551,6 +563,22 @@ function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale
       </section>
       <p className="microcopy speedsMeaning">{t.speeds.meaning}</p>
       {data.points.length ? <ChartPanel title={t.speeds.trend} subtitle={t.speeds.minuteMeans} option={option} /> : <section className="panel muted">{t.speeds.noTiming}</section>}
+      <section className="panel">
+        <div className="panelHeader"><h3>{t.speeds.recent}</h3><p className="microcopy">{t.speeds.recentHint}</p></div>
+        <div className="tableWrap"><table>
+          <thead><tr>{[t.speeds.created, t.speeds.finished, t.tables.model, t.speeds.responseId, t.speeds.elapsed, t.speeds.requestElapsed, t.speeds.outputTokens, t.speeds.finalRate, t.speeds.outputCharacters, t.speeds.outputItems].map((label) => <th key={label}>{label}</th>)}</tr></thead>
+          <tbody>{data.recent.map((item) => <tr key={item.response_id}>
+            <td>{new Date(item.created_at).toLocaleString(locale, { hour12: false })}</td>
+            <td>{new Date(item.updated_at).toLocaleString(locale, { hour12: false })}</td>
+            <td><strong>{item.model}</strong></td>
+            <td title={item.response_id}>{item.response_id.length > 24 ? `${item.response_id.slice(0, 12)}...${item.response_id.slice(-8)}` : item.response_id}</td>
+            <td>{number(item.duration_ms / 1000)}</td>
+            <td>{item.request_duration_ms === null ? t.tables.unknown : number(item.request_duration_ms / 1000)}</td>
+            <td>{formatInt(item.output_tokens, locale)}</td><td>{rate(item.tokens_per_second)}</td>
+            <td>{formatInt(item.output_characters, locale)}</td><td>{formatInt(item.output_items, locale)}</td>
+          </tr>)}{!data.recent.length ? <tr><td colSpan={10} className="emptyLine">{t.speeds.noRecent}</td></tr> : null}</tbody>
+        </table></div>
+      </section>
       <section className="panel">
         <div className="panelHeader"><h3>{t.speeds.active}</h3><p className="microcopy">{t.speeds.provisional}</p></div>
         <div className="tableWrap">

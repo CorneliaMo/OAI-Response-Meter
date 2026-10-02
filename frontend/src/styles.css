@@ -601,3 +601,22 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+.speedModelFilter summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.speedModelOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-top: 14px;
+  align-items: center;
+}
+
+.speedModelOptions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
