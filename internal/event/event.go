@@ -18,12 +18,14 @@ type DatagramKind int
 const (
 	KindUsage DatagramKind = iota + 1
 	KindRateLimits
+	KindSpeed
 )
 
 type Datagram struct {
 	Kind       DatagramKind
 	Usage      Usage
 	RateLimits RateLimits
+	Speed      Speed
 }
 
 type Usage struct {
@@ -160,6 +162,16 @@ func DecodeDatagram(data []byte) (Datagram, error) {
 	}
 	if err := json.Unmarshal(data, &header); err != nil {
 		return Datagram{}, fmt.Errorf("decode datagram: %w", err)
+	}
+	if header.EventType == SpeedEventType {
+		var speed Speed
+		if err := json.Unmarshal(data, &speed); err != nil {
+			return Datagram{}, fmt.Errorf("decode speed event: %w", err)
+		}
+		if err := speed.Validate(); err != nil {
+			return Datagram{}, err
+		}
+		return Datagram{Kind: KindSpeed, Speed: speed}, nil
 	}
 	if header.EventType == RateLimitsEventType {
 		var rateLimits RateLimits

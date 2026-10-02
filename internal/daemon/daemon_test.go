@@ -169,6 +169,10 @@ type memoryStore struct {
 	rateLimits []event.RateLimits
 }
 
+func (s *memoryStore) WriteSpeedBatch(_ context.Context, events []event.Speed) (store.WriteResult, error) {
+	return store.WriteResult{Inserted: len(events)}, nil
+}
+
 func (s *memoryStore) WriteBatch(_ context.Context, events []event.Usage) (store.WriteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

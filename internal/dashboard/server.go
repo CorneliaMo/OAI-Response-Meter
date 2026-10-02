@@ -302,6 +302,10 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 		return nil, nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if err := initSpeedSchema(context.Background(), db); err != nil {
+		db.Close()
+		return nil, nil, err
+	}
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("ping sqlite: %w", err)
@@ -326,6 +330,7 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", server.handleSummary)
+	mux.HandleFunc("/api/speeds", server.handleSpeeds)
 	mux.HandleFunc("/api/timeseries", server.handleTimeseries)
 	mux.HandleFunc("/api/models", server.handleModels)
 	mux.HandleFunc("/api/chains", server.handleChains)

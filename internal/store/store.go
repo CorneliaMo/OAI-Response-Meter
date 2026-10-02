@@ -336,7 +336,7 @@ func (s *Store) init(ctx context.Context) error {
 			return fmt.Errorf("init sqlite: %w", err)
 		}
 	}
-	return nil
+	return InitSpeedSchema(ctx, s.db)
 }
 
 func isDuplicateColumn(err error) bool {

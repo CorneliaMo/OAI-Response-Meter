@@ -1,7 +1,10 @@
 import asyncio
 import json
+import math
 import os
 import socket
+import time
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -21,6 +24,7 @@ class UsageMeterAddon:
         self.dropped_queue_full = 0
         self.dropped_send_error = 0
         self.sent = 0
+        self.speed_tracker = ResponseSpeedTracker()
 
     def running(self) -> None:
         self.queue = asyncio.Queue(maxsize=self.queue_size)
@@ -36,9 +40,20 @@ class UsageMeterAddon:
             self._enqueue(event)
 
     def websocket_message(self, flow: Any) -> None:
-        event = extract_websocket_usage(flow)
+        payload = _websocket_payload(flow)
+        if payload is None:
+            return
+        host, path = _flow_host_path(flow)
+        message = flow.websocket.messages[-1]
+        from_client = getattr(message, "from_client", False)
+        event = None if from_client else _websocket_event(payload, host, path)
         if event is not None:
             self._enqueue(event)
+        for sample in self.speed_tracker.observe(flow, payload, message):
+            self._enqueue(sample)
+
+    def websocket_end(self, flow: Any) -> None:
+        self.speed_tracker.forget(flow)
 
     def _enqueue(self, event: dict[str, Any]) -> None:
         if self.queue is None:
@@ -99,6 +114,14 @@ def extract_http_usage(flow: Any) -> Optional[dict[str, Any]]:
 
 
 def extract_websocket_usage(flow: Any) -> Optional[dict[str, Any]]:
+    payload = _websocket_payload(flow)
+    if payload is None or getattr(flow.websocket.messages[-1], "from_client", False):
+        return None
+    host, path = _flow_host_path(flow)
+    return _websocket_event(payload, host, path)
+
+
+def _websocket_payload(flow: Any) -> Optional[dict[str, Any]]:
     host, path = _flow_host_path(flow)
     if not _in_scope(host, path):
         return None
@@ -107,9 +130,6 @@ def extract_websocket_usage(flow: Any) -> Optional[dict[str, Any]]:
     if not messages:
         return None
     message = messages[-1]
-    from_client = getattr(message, "from_client", False)
-    if from_client:
-        return None
     text = getattr(message, "text", None)
     if text is None:
         content = getattr(message, "content", None)
@@ -123,12 +143,125 @@ def extract_websocket_usage(flow: Any) -> Optional[dict[str, Any]]:
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _websocket_event(payload: dict[str, Any], host: str, path: str) -> Optional[dict[str, Any]]:
     if payload.get("type") == "codex.rate_limits":
         return rate_limits_event_from_payload(payload, "websocket", host, path)
     if payload.get("type") != "response.completed":
         return None
     response = payload.get("response", payload)
     return event_from_response(response, "websocket", host, path)
+
+
+class ResponseSpeedTracker:
+    def __init__(self) -> None:
+        self.flows: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def forget(self, flow: Any) -> None:
+        self.flows.pop(str(getattr(flow, "id", id(flow))), None)
+
+    def observe(self, flow: Any, payload: dict[str, Any], message: Any) -> list[dict[str, Any]]:
+        flow_id = str(getattr(flow, "id", id(flow)))
+        timestamp = getattr(message, "timestamp", None)
+        now = timestamp if isinstance(timestamp, (int, float)) and math.isfinite(timestamp) and timestamp > 0 else time.time()
+        state = self.flows.setdefault(flow_id, {"pending": deque(maxlen=32), "active": OrderedDict(), "items": {}})
+        self.flows.move_to_end(flow_id)
+        while len(self.flows) > 1024:
+            self.flows.popitem(last=False)
+        active = state["active"]
+        for response_id, response in list(active.items()):
+            if now - response["created"] > 3600:
+                self._remove(state, response_id)
+
+        kind = payload.get("type", "")
+        if not isinstance(kind, str):
+            return []
+        if getattr(message, "from_client", False):
+            if kind == "response.create" and payload.get("generate") is not False:
+                request = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+                state["pending"].append((now, _string_or_empty(request.get("model"))))
+            return []
+        raw_response = payload.get("response")
+        raw_response = raw_response if isinstance(raw_response, dict) else {}
+        response_id = _string_or_empty(raw_response.get("id") or payload.get("response_id"))
+        if kind == "response.created" and response_id:
+            if response_id in active:
+                return []
+            pending = state["pending"].popleft() if state["pending"] else None
+            if pending and now - pending[0] > 3600:
+                pending = None
+            active[response_id] = {
+                "created": now, "request": pending[0] if pending else None,
+                "model": _string_or_empty(raw_response.get("model")) or (pending[1] if pending else ""),
+                "characters": 0, "done_items": set(), "tokens": 0, "known": False,
+                "last_sent": now, "sequence": -1,
+            }
+            while len(active) > 32:
+                self._remove(state, next(iter(active)))
+            return [self._sample(flow, response_id, active[response_id], now, False)]
+
+        # Item IDs safely associate deltas when several responses share a connection.
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        item_id = _string_or_empty(payload.get("item_id") or item.get("id"))
+        if not response_id and item_id:
+            response_id = state["items"].get(item_id, "")
+        if not response_id and len(active) == 1:
+            response_id = next(iter(active))
+        response = active.get(response_id)
+        if response is None or now < response["created"]:
+            return []
+        sequence = payload.get("sequence_number")
+        if isinstance(sequence, int):
+            if sequence <= response["sequence"]:
+                return []
+            response["sequence"] = sequence
+        if kind == "response.output_item.added" and item_id:
+            if len(state["items"]) < 4096:
+                state["items"][item_id] = response_id
+        if kind.endswith(".delta") and isinstance(payload.get("delta"), str):
+            response["characters"] += len(payload["delta"])
+        if kind == "response.output_item.done" and item_id:
+            response["done_items"].add(item_id)
+        usage = raw_response.get("usage")
+        if isinstance(usage, dict) and type(usage.get("output_tokens")) is int and usage["output_tokens"] >= 0:
+            response["tokens"] = usage["output_tokens"]
+            response["known"] = True
+        terminal = kind in ("response.completed", "response.failed", "response.incomplete")
+        if terminal:
+            response["model"] = _string_or_empty(raw_response.get("model")) or response["model"]
+            if kind != "response.completed":
+                response["known"] = False
+            sample = self._sample(flow, response_id, response, now, True)
+            self._remove(state, response_id)
+            return [sample]
+        relevant = kind.startswith(("response.output_", "response.content_part", "response.function_call_", "response.custom_tool_", "response.reasoning_")) or kind == "response.in_progress"
+        if relevant and now - response["last_sent"] >= 1:
+            response["last_sent"] = now
+            return [self._sample(flow, response_id, response, now, False)]
+        return []
+
+    @staticmethod
+    def _remove(state: dict[str, Any], response_id: str) -> None:
+        state["active"].pop(response_id, None)
+        state["items"] = {item_id: owner for item_id, owner in state["items"].items() if owner != response_id}
+
+    @staticmethod
+    def _sample(flow: Any, response_id: str, response: dict[str, Any], now: float, completed: bool) -> dict[str, Any]:
+        host, path = _flow_host_path(flow)
+        updated = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+        request = response["request"]
+        return {
+            "schema": SCHEMA_VERSION, "event_type": "response_speed", "ts": updated,
+            "source": "mitmproxy", "transport": "websocket", "host": host, "path": path,
+            "response_id": response_id, "model": response["model"],
+            "request_at": datetime.fromtimestamp(request, timezone.utc).isoformat().replace("+00:00", "Z") if request is not None else "",
+            "created_at": datetime.fromtimestamp(response["created"], timezone.utc).isoformat().replace("+00:00", "Z"),
+            "updated_at": updated, "completed": completed,
+            "output_tokens": response["tokens"], "output_tokens_known": response["known"],
+            "output_characters": response["characters"], "output_items": len(response["done_items"]),
+        }
 
 
 def rate_limits_event_from_payload(payload: dict[str, Any], transport: str, host: str, path: str) -> Optional[dict[str, Any]]:

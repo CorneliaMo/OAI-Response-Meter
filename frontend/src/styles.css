@@ -193,6 +193,19 @@ label span {
   grid-column: 1 / -1;
 }
 
+.controlsPanel.speedsControls {
+  grid-template-columns: minmax(280px, 0.7fr) minmax(320px, 1fr);
+}
+
+.kpiGrid.speedsKpis {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.speedsMeaning {
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -537,7 +550,7 @@ pre {
   }
 
   .sidebarTabs {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .sidebarMeta {
@@ -545,6 +558,7 @@ pre {
   }
 
   .controlsPanel,
+  .controlsPanel.speedsControls,
   .overviewGrid,
   .filters {
     grid-template-columns: 1fr;
@@ -569,6 +583,10 @@ pre {
 
   .kpiGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kpiGrid.speedsKpis {
+    grid-template-columns: 1fr;
   }
 
   .dateControls {

@@ -1,7 +1,8 @@
 import asyncio
 import unittest
+import json
 
-from addon import UsageMeterAddon, extract_http_usage, extract_websocket_usage
+from addon import ResponseSpeedTracker, UsageMeterAddon, extract_http_usage, extract_websocket_usage
 
 
 class Obj:
@@ -10,6 +11,65 @@ class Obj:
 
 
 class AddonTest(unittest.TestCase):
+    def test_speed_lifecycle_keeps_deltas_distinct_from_tokens(self):
+        tracker = ResponseSpeedTracker()
+        flow = Obj(id="speed-flow", request=Obj(host="api.openai.com", path="/v1/responses"))
+
+        def observe(payload, timestamp, from_client=False):
+            return tracker.observe(flow, payload, Obj(timestamp=timestamp, from_client=from_client))
+
+        self.assertEqual(observe({"type": "response.create", "model": "requested-model"}, 1000, True), [])
+        created = observe({"type": "response.created", "response": {"id": "resp_speed", "model": "actual-model"}}, 1001)[0]
+        self.assertEqual(created["request_at"], "1970-01-01T00:16:40Z")
+        self.assertFalse(created["output_tokens_known"])
+        observe({"type": "response.output_item.added", "item": {"id": "item_1"}, "sequence_number": 1}, 1001.1)
+        delta = {"type": "response.output_text.delta", "item_id": "item_1", "delta": "hello", "sequence_number": 2}
+        live = observe(delta, 1002.1)[0]
+        self.assertEqual(live["output_characters"], 5)
+        self.assertFalse(live["output_tokens_known"])
+        self.assertNotIn("hello", json.dumps(live))
+        self.assertEqual(observe(delta, 1003), [])
+        observe({"type": "response.output_item.done", "item": {"id": "item_1"}, "sequence_number": 3}, 1003.1)
+        final = observe({"type": "response.completed", "response": {"id": "resp_speed", "model": "actual-model", "usage": {"output_tokens": 50}}, "sequence_number": 4}, 1006)[0]
+        self.assertTrue(final["completed"])
+        self.assertTrue(final["output_tokens_known"])
+        self.assertEqual(final["output_tokens"], 50)
+        self.assertEqual(final["output_items"], 1)
+        self.assertEqual(final["output_characters"], 5)
+        self.assertEqual(observe({"type": "response.completed", "response": {"id": "resp_speed"}}, 1007), [])
+        tracker.forget(flow)
+        self.assertEqual(len(tracker.flows), 0)
+
+    def test_speed_tracking_isolates_connections_and_skips_ambiguous_deltas(self):
+        tracker = ResponseSpeedTracker()
+        flow = Obj(id="one", request=Obj(host="api.openai.com", path="/v1/responses"))
+        second = Obj(id="two", request=flow.request)
+        for response_id in ("resp_one", "resp_two"):
+            tracker.observe(flow, {"type": "response.created", "response": {"id": response_id}}, Obj(timestamp=1000, from_client=False))
+        delta = {"type": "response.output_text.delta", "delta": "ambiguous"}
+        self.assertEqual(tracker.observe(flow, delta, Obj(timestamp=1002, from_client=False)), [])
+        self.assertEqual(tracker.observe(second, delta, Obj(timestamp=1002, from_client=False)), [])
+
+    def test_addon_enqueues_speed_and_final_usage(self):
+        async def run():
+            addon = UsageMeterAddon()
+            addon.queue = asyncio.Queue(maxsize=10)
+            flow = Obj(id="integration", request=Obj(host="api.openai.com", path="/v1/responses"), websocket=Obj(messages=[]))
+            for payload, timestamp, from_client in [
+                ({"type": "response.create", "model": "gpt-test"}, 1000, True),
+                ({"type": "response.created", "response": {"id": "resp_integrated", "model": "gpt-test"}}, 1001, False),
+                ({"type": "response.completed", "response": {"id": "resp_integrated", "model": "gpt-test", "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}}}, 1003, False),
+            ]:
+                flow.websocket.messages.append(Obj(text=json.dumps(payload), timestamp=timestamp, from_client=from_client))
+                addon.websocket_message(flow)
+            events = [addon.queue.get_nowait() for _ in range(addon.queue.qsize())]
+            self.assertEqual(len(events), 3)
+            self.assertEqual(events[0]["event_type"], "response_speed")
+            self.assertEqual(events[1]["output_tokens"], 20)
+            self.assertNotIn("event_type", events[1])
+            self.assertTrue(events[2]["completed"])
+        asyncio.run(run())
+
     def test_extract_http_json_usage(self):
         flow = Obj(
             request=Obj(host="api.openai.com", path="/v1/responses"),

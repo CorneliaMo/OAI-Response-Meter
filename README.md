@@ -206,6 +206,7 @@ The embedded dashboard polls every 5 seconds and includes:
 - model breakdown chart
 - conversation chain rollups
 - raw usage event table
+- response speed by minute and model, with active WebSocket response progress
 
 No prompt, request body, response body, generated content, or message text is
 rendered by the dashboard.
@@ -213,6 +214,27 @@ rendered by the dashboard.
 The dashboard sends the browser's IANA time zone to the local API. Day, week,
 month, and year ranges are calculated from that local time zone's calendar
 boundaries, and chart buckets use the same local boundaries.
+
+Response speed is recorded for new WebSocket traffic. The addon observes
+`response.create`, `response.created`, and `response.completed` using local
+message timestamps. Completed speed is final `usage.output_tokens` divided by
+the time from `response.created` to completion, including any reasoning tokens
+reported in output usage. Request-to-completion latency is recorded separately
+when the corresponding client request was observed. Each response contributes
+one sample to the minute containing its observed creation time; multiple samples
+for the same minute and canonical model use an arithmetic mean of their speeds.
+
+Active responses emit metadata snapshots at most once per second. Text and tool
+input deltas update character counts, while completed output items update item
+counts. These events usually lack token usage, so live character throughput is
+shown separately from token throughput. Provisional token throughput is shown
+only when an event supplies response-level output token usage; the final usage
+replaces it at completion. Delta counts are never treated as token counts.
+Incomplete/failed responses, zero-output responses (including prefill-only
+requests), and responses without valid observed timing are
+excluded from the completed speed trend. Existing usage records cannot supply
+this timing and are not retroactively converted. No generated text is persisted
+by speed tracking.
 
 Estimated cost uses `configs/prices.json` by default and can be overridden with
 `--prices`. Missing price files disable cost estimates, and missing model rates

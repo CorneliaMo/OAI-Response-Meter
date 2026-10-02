@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { detectLocale, locales, messages, type Locale } from "./i18n";
 
-type TabValue = "overview" | "history" | "limits";
+type TabValue = "overview" | "history" | "limits" | "speeds";
 type RangeValue = "day" | "week" | "month" | "year";
 type DisplayMode = "tokens" | "cost";
 type EventSortValue = "ts_desc" | "ts_asc" | "total_desc" | "input_desc" | "output_desc" | "cached_desc" | "reasoning_desc";
@@ -178,8 +178,39 @@ type HistoryData = {
   events: EventsResponse;
 };
 
+type SpeedPoint = {
+  time: string;
+  model: string;
+  requests: number;
+  avg_tokens_per_second: number;
+  avg_duration_ms: number;
+  avg_request_duration_ms: number | null;
+};
+
+type ActiveResponse = {
+  response_id: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+  duration_ms: number;
+  request_duration_ms: number | null;
+  output_tokens: number;
+  output_tokens_known: boolean;
+  output_characters: number;
+  output_items: number;
+  tokens_per_second: number | null;
+  characters_per_second: number;
+};
+
+type SpeedsResponse = {
+  points: SpeedPoint[];
+  active: ActiveResponse[];
+  completed_requests: number;
+  avg_tokens_per_second: number | null;
+};
+
 const ranges: RangeValue[] = ["day", "week", "month", "year"];
-const tabs: TabValue[] = ["overview", "history", "limits"];
+const tabs: TabValue[] = ["overview", "history", "limits", "speeds"];
 const eventSorts: EventSortValue[] = ["ts_desc", "ts_asc", "total_desc", "input_desc", "output_desc", "cached_desc", "reasoning_desc"];
 const historyPageSize = 25;
 const limitsPageSize = 25;
@@ -195,6 +226,7 @@ export function App() {
   const [overviewData, setOverviewData] = useState<OverviewData | null>(null);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [limitsData, setLimitsData] = useState<RateLimitsResponse | null>(null);
+  const [speedsData, setSpeedsData] = useState<SpeedsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -244,7 +276,7 @@ export function App() {
       }
       inFlight = true;
       try {
-        setLoading((current) => (hasTabData(activeTab, overviewData, historyData, limitsData) ? current : true));
+        setLoading((current) => (hasTabData(activeTab, overviewData, historyData, limitsData, speedsData) ? current : true));
         if (activeTab === "overview") {
           const bucket = range === "day" ? "hour" : range === "year" ? "month" : "day";
           const [summary, timeseries, models, heatmap] = await Promise.all([
@@ -279,6 +311,12 @@ export function App() {
             return;
           }
           setHistoryData({ models, events });
+        } else if (activeTab === "speeds") {
+          const speeds = await requestJSON<SpeedsResponse>(`/api/speeds?${baseQuery}`);
+          if (cancelled) {
+            return;
+          }
+          setSpeedsData(speeds);
         } else {
           const limitsQuery = new URLSearchParams(baseQuery);
           limitsQuery.set("limit", String(limitsPageSize));
@@ -387,7 +425,7 @@ export function App() {
           </div>
         </header>
 
-        <section className="panel controlsPanel">
+        <section className={`panel controlsPanel${activeTab === "speeds" ? " speedsControls" : ""}`}>
           <div className="segmented">
             {ranges.map((value) => (
               <button className={value === range ? "active" : ""} key={value} onClick={() => setRange(value)} type="button">
@@ -395,13 +433,13 @@ export function App() {
               </button>
             ))}
           </div>
-          <div className="segmented compact">
+          {activeTab !== "speeds" ? <div className="segmented compact">
             {(["tokens", "cost"] as DisplayMode[]).map((value) => (
               <button className={value === displayMode ? "active" : ""} key={value} onClick={() => setDisplayMode(value)} type="button">
                 {t.mode[value]}
               </button>
             ))}
-          </div>
+          </div> : null}
           <div className="dateControls">
             <label>
               <span>{t.controls.from}</span>
@@ -427,7 +465,7 @@ export function App() {
         </section>
 
         {error ? <section className="panel error">{error}</section> : null}
-        {loading && !hasTabData(activeTab, overviewData, historyData, limitsData) ? <section className="panel muted">{t.loadingDashboard}</section> : null}
+        {loading && !hasTabData(activeTab, overviewData, historyData, limitsData, speedsData) ? <section className="panel muted">{t.loadingDashboard}</section> : null}
 
         {activeTab === "overview" && overviewData ? <OverviewPanel data={overviewData} displayMode={displayMode} locale={locale} t={t} /> : null}
         {activeTab === "history" ? (
@@ -451,8 +489,90 @@ export function App() {
           />
         ) : null}
         {activeTab === "limits" && limitsData ? <LimitsPanel data={limitsData} limitsOffset={limitsOffset} locale={locale} onOffsetChange={setLimitsOffset} t={t} /> : null}
+        {activeTab === "speeds" && speedsData ? <SpeedsPanel data={speedsData} locale={locale} t={t} /> : null}
       </section>
     </main>
+  );
+}
+
+function SpeedsPanel({ data, locale, t }: { data: SpeedsResponse; locale: Locale; t: (typeof messages)[Locale] }) {
+  const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 2 });
+  const rate = (value: number | null) => value !== null && Number.isFinite(value) ? number(value) : t.tables.unknown;
+  const minute = (value: number) => new Date(value).toLocaleString(locale, {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  const option = useMemo<echarts.EChartsCoreOption>(() => {
+    const models = [...new Set(data.points.map((point) => point.model))].sort();
+    return {
+      animation: false,
+      legend: { type: "scroll", top: 8 },
+      grid: { top: 52, right: 24, bottom: 40, left: 64 },
+      tooltip: {
+        trigger: "item",
+        renderMode: "richText",
+        formatter: (params: unknown) => {
+          const item = params as { seriesName: string; data: { value: [number, number | null]; requests?: number } };
+          return `${minute(item.data.value[0])}\n${item.seriesName}: ${rate(item.data.value[1])} ${t.speeds.tokenUnit}\n${t.speeds.samples(formatInt(item.data.requests ?? 0, locale))}`;
+        },
+      },
+      xAxis: {
+        type: "time",
+        axisLabel: {
+          color: "#57606a",
+          hideOverlap: true,
+          formatter: (value: number) => new Intl.DateTimeFormat(locale, {
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+          }).format(new Date(value)),
+        },
+      },
+      yAxis: { type: "value", name: t.speeds.tokenUnit, min: 0, splitLine: { lineStyle: { color: "#d8dee4" } } },
+      series: models.map((model) => {
+        const points = data.points.filter((point) => point.model === model).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+        const values: Array<{ value: [number, number | null]; requests?: number }> = [];
+        // Break lines across unobserved minutes without manufacturing zero-speed samples.
+        points.forEach((point, index) => {
+          const time = Date.parse(point.time);
+          if (index > 0 && time - Date.parse(points[index - 1].time) > 60000) {
+            values.push({ value: [Date.parse(points[index - 1].time) + 60000, null] });
+          }
+          values.push({ value: [time, Number.isFinite(point.avg_tokens_per_second) ? point.avg_tokens_per_second : null], requests: point.requests });
+        });
+        return { name: model, type: "line", smooth: false, connectNulls: false, showSymbol: true, symbolSize: 6, data: values };
+      }),
+    };
+  }, [data.points, locale, t]);
+  return (
+    <>
+      <section className="kpiGrid speedsKpis">
+        <article className="kpiCard"><p>{t.speeds.completed}</p><strong>{formatInt(data.completed_requests, locale)}</strong><span>{t.kpi.recordsInRange}</span></article>
+        <article className="kpiCard"><p>{t.speeds.average}</p><strong>{rate(data.avg_tokens_per_second)}</strong><span>{t.speeds.tokenUnit}</span></article>
+        <article className="kpiCard"><p>{t.speeds.active}</p><strong>{formatInt(data.active.length, locale)}</strong><span>{t.speeds.recentLive}</span></article>
+      </section>
+      <p className="microcopy speedsMeaning">{t.speeds.meaning}</p>
+      {data.points.length ? <ChartPanel title={t.speeds.trend} subtitle={t.speeds.minuteMeans} option={option} /> : <section className="panel muted">{t.speeds.noTiming}</section>}
+      <section className="panel">
+        <div className="panelHeader"><h3>{t.speeds.active}</h3><p className="microcopy">{t.speeds.provisional}</p></div>
+        <div className="tableWrap">
+          <table>
+            <thead><tr>{[t.tables.model, t.speeds.responseId, t.speeds.elapsed, t.speeds.outputTokens, t.speeds.tokenRate, t.speeds.outputCharacters, t.speeds.characterRate, t.speeds.outputItems].map((label) => <th key={label}>{label}</th>)}</tr></thead>
+            <tbody>
+              {data.active.map((item) => <tr key={item.response_id}>
+                <td><strong>{item.model}</strong></td>
+                <td title={item.response_id}>{item.response_id.length > 24 ? `${item.response_id.slice(0, 12)}...${item.response_id.slice(-8)}` : item.response_id}</td>
+                <td>{number(item.duration_ms / 1000)}</td>
+                <td>{item.output_tokens_known ? formatInt(item.output_tokens, locale) : t.tables.unknown}</td>
+                <td>{item.output_tokens_known ? rate(item.tokens_per_second) : t.tables.unknown}</td>
+                <td>{formatInt(item.output_characters, locale)}</td>
+                <td>{rate(item.characters_per_second)}</td>
+                <td>{formatInt(item.output_items, locale)}</td>
+              </tr>)}
+              {!data.active.length ? <tr><td colSpan={8} className="emptyLine">{t.speeds.noActive}</td></tr> : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -1047,12 +1167,15 @@ async function requestJSON<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function hasTabData(activeTab: TabValue, overviewData: OverviewData | null, historyData: HistoryData | null, limitsData: RateLimitsResponse | null) {
+function hasTabData(activeTab: TabValue, overviewData: OverviewData | null, historyData: HistoryData | null, limitsData: RateLimitsResponse | null, speedsData: SpeedsResponse | null) {
   if (activeTab === "overview") {
     return overviewData !== null;
   }
   if (activeTab === "history") {
     return historyData !== null;
+  }
+  if (activeTab === "speeds") {
+    return speedsData !== null;
   }
   return limitsData !== null;
 }
