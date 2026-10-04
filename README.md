@@ -170,12 +170,18 @@ The mitmproxy wrapper also sets `allow_hosts` to `api.openai.com` and
 HTTP/WebSocket addon path; when upstream mode is configured, that traffic is
 still forwarded through the configured upstream proxy.
 
-It does not persist Authorization headers, cookies, prompts, request bodies,
-response bodies, generated content, or full WebSocket messages.
+It does not persist Authorization headers, cookies, user messages, complete
+request/response bodies, generated content, or full WebSocket messages.
+The preset prompt observer is an explicit exception: visible preset instruction
+text is stored in a separate SQLite table for version comparison, not in JSONL
+or verbose logs. These instructions may contain sensitive configuration. Protect
+the database and keep the dashboard private (localhost by default); the dashboard
+has no authentication.
 
-The dashboard API is read-only and exposes only the same stored metadata:
+The dashboard API is read-only and exposes stored metadata:
 timestamps, transport, host, path, response IDs, optional `prompt_cache_key`,
-model, and token counts.
+model, and token counts. The prompt-version detail endpoint additionally exposes
+the stored preset text.
 
 `prompt_cache_key` is observed metadata and is not treated as a required
 Responses API field. Missing values are stored as an empty string; with
@@ -207,9 +213,11 @@ The embedded dashboard polls every 5 seconds and includes:
 - conversation chain rollups
 - raw usage event table
 - response speed by minute and model, with active WebSocket response progress
+- first visible output latency and tool parameter-generation profiles
+- per-model observed preset prompt versions with side-by-side line comparisons
 
-No prompt, request body, response body, generated content, or message text is
-rendered by the dashboard.
+Only the prompt-version page renders captured preset text. User messages,
+generated content, and tool arguments are not captured or rendered.
 
 The dashboard sends the browser's IANA time zone to the local API. Day, week,
 month, and year ranges are calculated from that local time zone's calendar
@@ -242,6 +250,28 @@ requests), and responses without valid observed timing are
 excluded from the completed speed trend. Existing usage records cannot supply
 this timing and are not retroactively converted. No generated text is persisted
 by speed tracking.
+
+First-visible latency is measured from the observed client `response.create`
+to the first nonempty `response.output_text.delta`. It is not engine TTFT or
+first reasoning-token latency. A tool-only response or an unobserved client
+request yields no latency measurement. Tool profiles group function/custom
+calls by model, name and type. Their duration spans output-item added to done,
+measuring parameter generation, not the execution time of the external tool.
+Neither the tool arguments nor generated text is stored.
+
+Preset versions are scoped independently to each canonical model and identified
+by SHA-256 of the exact observed text. The observer prefers explicit
+`instructions`; otherwise it selects the first system message, falling back to
+the first developer message. Later dynamic developer messages, user content,
+tool schemas and tool results are excluded. This is a best-effort visible
+preset, not the complete effective prompt or hidden server instructions.
+WebSocket observations use the model from `response.created` when available;
+HTTP POST observations use the requested model. Versions show first/last seen
+and observation counts across all time, independently of dashboard date filters.
+Only newly observed traffic supplies these records; old usage is not backfilled.
+Text is split into bounded datagrams and persisted only after complete,
+hash-verified assembly. Missing chunks do not create partial versions. Prompts
+over 1 MiB are skipped, and comparisons use bounded jsdiff processing.
 
 Estimated cost uses `configs/prices.json` by default and can be overridden with
 `--prices`. Missing price files disable cost estimates, and missing model rates

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,7 @@ class UsageMeterAddon:
         self.dropped_send_error = 0
         self.sent = 0
         self.speed_tracker = ResponseSpeedTracker()
+        self.prompt_tracker = PromptVersionTracker()
 
     def running(self) -> None:
         self.queue = asyncio.Queue(maxsize=self.queue_size)
@@ -42,11 +44,38 @@ class UsageMeterAddon:
         while True:
             await asyncio.sleep(60)
             self.speed_tracker.prune(time.time())
+            self.prompt_tracker.prune(time.time())
 
     def response(self, flow: Any) -> None:
         event = extract_http_usage(flow)
         if event is not None:
             self._enqueue(event)
+
+    def request(self, flow: Any) -> None:
+        host, path = _flow_host_path(flow)
+        if not _in_scope(host, path):
+            return
+        request = getattr(flow, "request", None)
+        if request is None or getattr(request, "method", "") != "POST":
+            return
+        content = getattr(request, "content", None)
+        if not content:
+            return
+        try:
+            payload = json.loads(content)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        # HTTP has no response.created frame at request time; use the requested model.
+        class Message:
+            timestamp = getattr(request, "timestamp_start", None)
+            from_client = True
+        message = Message()
+        self.prompt_tracker.observe(flow, {**payload, "type": "response.create"}, message)
+        message.from_client = False
+        for sample in self.prompt_tracker.observe(flow, {"type": "response.created", "response": {"model": payload.get("model")}}, message):
+            self._enqueue(sample)
 
     def websocket_message(self, flow: Any) -> None:
         payload = _websocket_payload(flow)
@@ -60,9 +89,12 @@ class UsageMeterAddon:
             self._enqueue(event)
         for sample in self.speed_tracker.observe(flow, payload, message):
             self._enqueue(sample)
+        for sample in self.prompt_tracker.observe(flow, payload, message):
+            self._enqueue(sample)
 
     def websocket_end(self, flow: Any) -> None:
         self.speed_tracker.forget(flow)
+        self.prompt_tracker.forget(flow)
 
     def _enqueue(self, event: dict[str, Any]) -> None:
         if self.queue is None:
@@ -80,10 +112,10 @@ class UsageMeterAddon:
             while True:
                 event = await self.queue.get()
                 try:
-                    payload = json.dumps(event, separators=(",", ":")).encode("utf-8")
+                    payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                     await asyncio.get_running_loop().sock_sendto(sock, payload, self.socket_path)
                     self.sent += 1
-                except OSError:
+                except (OSError, UnicodeError, TypeError, ValueError):
                     self.dropped_send_error += 1
                 finally:
                     self.queue.task_done()
@@ -215,6 +247,7 @@ class ResponseSpeedTracker:
                 "model": _string_or_empty(raw_response.get("model")) or (pending[1] if pending else ""),
                 "characters": 0, "done_items": set(), "tokens": 0, "known": False,
                 "last_sent": now, "sequence": -1,
+                "first_visible": None, "tools": {},
             }
             while len(active) > 32:
                 self._remove(state, next(iter(active)))
@@ -238,10 +271,28 @@ class ResponseSpeedTracker:
         if kind == "response.output_item.added" and item_id:
             if len(state["items"]) < 4096:
                 state["items"][item_id] = response_id
+            if item.get("type") in ("function_call", "custom_tool_call") and len(response["tools"]) < 128:
+                response["tools"].setdefault(item_id, {
+                    "item_id": item_id, "name": _string_or_empty(item.get("name")),
+                    "type": item["type"], "started_at": self._timestamp(now),
+                    "finished_at": "", "input_characters": 0,
+                })
         if kind.endswith(".delta") and isinstance(payload.get("delta"), str):
             response["characters"] += len(payload["delta"])
+            if kind == "response.output_text.delta" and payload["delta"] and response["first_visible"] is None:
+                response["first_visible"] = now
+            tool = response["tools"].get(item_id)
+            if tool is not None and kind in ("response.function_call_arguments.delta", "response.custom_tool_call_input.delta"):
+                tool["input_characters"] += len(payload["delta"])
         if kind == "response.output_item.done" and item_id:
             response["done_items"].add(item_id)
+            tool = response["tools"].get(item_id)
+            if tool is not None and not tool["finished_at"]:
+                tool["finished_at"] = self._timestamp(now)
+                tool["name"] = _string_or_empty(item.get("name")) or tool["name"]
+                final_input = item.get("arguments") if tool["type"] == "function_call" else item.get("input")
+                if isinstance(final_input, str):
+                    tool["input_characters"] = len(final_input)
         usage = raw_response.get("usage")
         if isinstance(usage, dict) and type(usage.get("output_tokens")) is int and usage["output_tokens"] >= 0:
             response["tokens"] = usage["output_tokens"]
@@ -266,6 +317,10 @@ class ResponseSpeedTracker:
         state["items"] = {item_id: owner for item_id, owner in state["items"].items() if owner != response_id}
 
     @staticmethod
+    def _timestamp(now: float) -> str:
+        return datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
     def _sample(flow: Any, response_id: str, response: dict[str, Any], now: float, completed: bool) -> dict[str, Any]:
         host, path = _flow_host_path(flow)
         updated = datetime.fromtimestamp(now, timezone.utc).isoformat().replace("+00:00", "Z")
@@ -279,7 +334,96 @@ class ResponseSpeedTracker:
             "updated_at": updated, "completed": completed,
             "output_tokens": response["tokens"], "output_tokens_known": response["known"],
             "output_characters": response["characters"], "output_items": len(response["done_items"]),
+            "first_visible_at": ResponseSpeedTracker._timestamp(response["first_visible"]) if response["first_visible"] is not None else "",
+            "tools": [dict(tool) for tool in response["tools"].values()],
         }
+
+
+class PromptVersionTracker:
+    """Retain only the visible preset, not dynamic instructions or user content."""
+    def __init__(self) -> None:
+        self.pending: OrderedDict[str, deque[dict[str, Any]]] = OrderedDict()
+
+    def forget(self, flow: Any) -> None:
+        self.pending.pop(str(getattr(flow, "id", id(flow))), None)
+
+    def prune(self, now: float) -> None:
+        for key, items in list(self.pending.items()):
+            while items and now - items[0]["at"] >= 600:
+                items.popleft()
+            if not items:
+                self.pending.pop(key, None)
+
+    def observe(self, flow: Any, payload: dict[str, Any], message: Any) -> list[dict[str, Any]]:
+        timestamp = getattr(message, "timestamp", None)
+        now = timestamp if isinstance(timestamp, (int, float)) and math.isfinite(timestamp) and timestamp > 0 else time.time()
+        self.prune(now)
+        key = str(getattr(flow, "id", id(flow)))
+        if getattr(message, "from_client", False):
+            if payload.get("type") != "response.create":
+                return []
+            request = payload.get("response") if isinstance(payload.get("response"), dict) else payload
+            preset = _visible_preset(request)
+            pending = self.pending.setdefault(key, deque(maxlen=4))
+            pending.append({"at": now, "model": _string_or_empty(request.get("model")), "preset": preset})
+            self.pending.move_to_end(key)
+            while len(self.pending) > 32:
+                self.pending.popitem(last=False)
+            return []
+        if payload.get("type") != "response.created":
+            return []
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return []
+        items = self.pending.get(key)
+        pending = items.popleft() if items else None
+        if not items:
+            self.pending.pop(key, None)
+        preset = pending["preset"] if pending and pending["preset"] is not None else _visible_preset(response)
+        if preset is None:
+            return []
+        model = _string_or_empty(response.get("model")) or (pending["model"] if pending else "")
+        if not model:
+            return []
+        source, text = preset
+        chunks = [text[index:index + 6000] for index in range(0, len(text), 6000)]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        observed = ResponseSpeedTracker._timestamp(pending["at"] if pending else now)
+        return [{"schema": SCHEMA_VERSION, "event_type": "prompt_version", "ts": observed,
+                 "model": model, "source_label": source, "hash": digest,
+                 "chunk_index": index, "chunk_count": len(chunks), "text": chunk}
+                for index, chunk in enumerate(chunks)]
+
+
+def _visible_preset(request: dict[str, Any]) -> Optional[tuple[str, str]]:
+    instructions = request.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        source, text = "instructions", instructions
+    else:
+        items = request.get("input")
+        if not isinstance(items, list):
+            return None
+        item = next((item for role in ("system", "developer") for item in items
+                     if isinstance(item, dict) and item.get("role") == role and item.get("type", "message") == "message"), None)
+        if item is None:
+            return None
+        source = item["role"]
+        content = item.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = [part["text"] for part in content if isinstance(part, dict)
+                     and part.get("type") in ("input_text", "text") and isinstance(part.get("text"), str)]
+            text = "\n".join(parts)
+        else:
+            return None
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if not text or len(encoded) > 1024 * 1024:
+        return None
+    return source, text
 
 
 def rate_limits_event_from_payload(payload: dict[str, Any], transport: str, host: str, path: str) -> Optional[dict[str, Any]]:

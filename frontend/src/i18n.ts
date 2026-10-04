@@ -21,18 +21,21 @@ export const messages = {
       history: "History",
       limits: "Limits",
       speeds: "Response Speed",
+      prompts: "Prompt Presets",
     },
     tabsDescription: {
       overview: "Usage, cost, and activity",
       history: "Raw usage events",
       limits: "Codex rate windows",
       speeds: "Recorded timing and live output",
+      prompts: "Observed preset versions, all time",
     },
     headings: {
       overview: "Usage at a glance",
       history: "Detailed event history",
       limits: "Rate limit windows",
       speeds: "Response speed",
+      prompts: "Observed prompt presets",
     },
     range: {
       day: "day",
@@ -221,6 +224,12 @@ export const messages = {
       initialUsed: (cost: string, ratio: string) => `${cost} initial used, ${ratio}`,
     },
     speeds: {
+      firstVisibleAverage: "Average first-visible latency",
+      firstVisible: "First-visible latency (ms)",
+      firstVisibleHint: "ms · known request-to-first-text measurements",
+      tools: "Tool profiles",
+      toolsHint: "Finalized snapshots in the selected range. Parameter generation is added → done, not tool execution.",
+      toolName: "Tool", toolType: "Type", calls: "Calls", completedCalls: "Completed calls", inputCharacters: "Input characters", inputDuration: "Average parameter generation (ms)", noTools: "No tool calls in this range.",
       models: "Models",
       allModels: "All models",
       recent: "Recent completed responses",
@@ -249,6 +258,10 @@ export const messages = {
       provisional: "Elapsed time runs from response creation to the recorded snapshot. Live tokens/s requires reliable usage and is provisional. Characters aggregate text/tool deltas, not tokens.",
       tokenUnit: "tokens/s",
       samples: (count: string) => `${count} samples`,
+    },
+    prompts: {
+      scope: "All time · Observed preset: explicit instructions, otherwise the first system message, otherwise the first developer message. Not the full hidden server prompt.",
+      versions: "Versions", source: "Source", firstSeen: "First seen", lastSeen: "Last seen", observations: "Observations", characters: "Characters", before: "Before", after: "After", empty: "No observed presets for this model.", loading: "Loading preset text…", failed: "Failed to load presets.", limited: "Diff limit reached. Showing original texts without change highlighting.", identical: "The selected versions are identical.",
     },
     pagination: {
       previous: "Previous",
@@ -282,18 +295,21 @@ export const messages = {
       history: "历史",
       limits: "限额",
       speeds: "响应速度",
+      prompts: "提示词预设",
     },
     tabsDescription: {
       overview: "用量、费用与活跃度",
       history: "原始用量事件",
       limits: "Codex 限额窗口",
       speeds: "已记录耗时与实时输出",
+      prompts: "已观测预设版本，全部时间",
     },
     headings: {
       overview: "用量总览",
       history: "详细事件历史",
       limits: "限额窗口",
       speeds: "响应速度",
+      prompts: "已观测提示词预设",
     },
     range: {
       day: "日",
@@ -483,6 +499,12 @@ export const messages = {
     },
     speeds: {
       models: "模型",
+      firstVisibleAverage: "平均首次可见延迟",
+      firstVisible: "首次可见延迟（毫秒）",
+      firstVisibleHint: "毫秒 · 已知的请求至首次文本观测",
+      tools: "工具统计",
+      toolsHint: "所选范围内的已完成响应快照。参数生成为 added → done，不是工具执行耗时。",
+      toolName: "工具", toolType: "类型", calls: "调用数", completedCalls: "已完成调用", inputCharacters: "输入字符", inputDuration: "平均参数生成耗时（毫秒）", noTools: "当前范围没有工具调用。",
       allModels: "全部模型",
       recent: "最近已完成的响应",
       recentHint: "所选时间范围与模型内，最近完成的 20 条响应",
@@ -510,6 +532,10 @@ export const messages = {
       provisional: "已用时间从响应创建起算至已记录快照。实时 Token/秒需要可靠用量数据，且为暂定值。字符数汇总文本和工具增量，不等于 Token。",
       tokenUnit: "Token/秒",
       samples: (count: string) => `${count} 个样本`,
+    },
+    prompts: {
+      scope: "全部时间 · 已观测预设：显式 instructions，否则仅第一条 system 消息，否则仅第一条 developer 消息。不是服务器完整隐藏提示词。",
+      versions: "版本", source: "来源", firstSeen: "首次观测", lastSeen: "最后观测", observations: "观测次数", characters: "字符数", before: "旧版本", after: "新版本", empty: "该模型没有已观测预设。", loading: "正在加载预设文本…", failed: "加载预设失败。", limited: "差异计算达到限制。显示原始文本，不标记变更。", identical: "所选版本相同。",
     },
     pagination: {
       previous: "上一页",

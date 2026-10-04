@@ -171,6 +171,10 @@ type memoryStore struct {
 
 func (s *memoryStore) PruneActiveSpeeds(context.Context, time.Time) error { return nil }
 
+func (s *memoryStore) WritePromptBatch(_ context.Context, events []event.PromptVersion) (store.WriteResult, error) {
+	return store.WriteResult{Inserted: len(events)}, nil
+}
+
 func (s *memoryStore) WriteSpeedBatch(_ context.Context, events []event.Speed) (store.WriteResult, error) {
 	return store.WriteResult{Inserted: len(events)}, nil
 }

@@ -3,10 +3,12 @@ package dashboard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/cornelia/oai-response-meter/internal/event"
 	"github.com/cornelia/oai-response-meter/internal/pricing"
 	"github.com/cornelia/oai-response-meter/internal/store"
 )
@@ -14,36 +16,50 @@ import (
 func initSpeedSchema(ctx context.Context, db *sql.DB) error { return store.InitSpeedSchema(ctx, db) }
 
 type SpeedPoint struct {
-	Time                 string   `json:"time"`
-	Model                string   `json:"model"`
-	Requests             int      `json:"requests"`
-	AvgTokensPerSecond   float64  `json:"avg_tokens_per_second"`
-	AvgDurationMS        float64  `json:"avg_duration_ms"`
-	AvgRequestDurationMS *float64 `json:"avg_request_duration_ms"`
+	Time                     string   `json:"time"`
+	Model                    string   `json:"model"`
+	Requests                 int      `json:"requests"`
+	AvgTokensPerSecond       float64  `json:"avg_tokens_per_second"`
+	AvgDurationMS            float64  `json:"avg_duration_ms"`
+	AvgRequestDurationMS     *float64 `json:"avg_request_duration_ms"`
+	AvgFirstVisibleLatencyMS *float64 `json:"avg_first_visible_latency_ms"`
 }
 
 type ActiveSpeed struct {
-	ResponseID          string   `json:"response_id"`
-	Model               string   `json:"model"`
-	CreatedAt           string   `json:"created_at"`
-	UpdatedAt           string   `json:"updated_at"`
-	DurationMS          float64  `json:"duration_ms"`
-	RequestDurationMS   *float64 `json:"request_duration_ms"`
-	OutputTokens        int64    `json:"output_tokens"`
-	OutputTokensKnown   bool     `json:"output_tokens_known"`
-	OutputCharacters    int64    `json:"output_characters"`
-	OutputItems         int64    `json:"output_items"`
-	TokensPerSecond     *float64 `json:"tokens_per_second"`
-	CharactersPerSecond float64  `json:"characters_per_second"`
+	ResponseID            string   `json:"response_id"`
+	Model                 string   `json:"model"`
+	CreatedAt             string   `json:"created_at"`
+	UpdatedAt             string   `json:"updated_at"`
+	DurationMS            float64  `json:"duration_ms"`
+	RequestDurationMS     *float64 `json:"request_duration_ms"`
+	FirstVisibleLatencyMS *float64 `json:"first_visible_latency_ms"`
+	OutputTokens          int64    `json:"output_tokens"`
+	OutputTokensKnown     bool     `json:"output_tokens_known"`
+	OutputCharacters      int64    `json:"output_characters"`
+	OutputItems           int64    `json:"output_items"`
+	TokensPerSecond       *float64 `json:"tokens_per_second"`
+	CharactersPerSecond   float64  `json:"characters_per_second"`
 }
 
 type SpeedsResponse struct {
-	Points             []SpeedPoint  `json:"points"`
-	Active             []ActiveSpeed `json:"active"`
-	Recent             []ActiveSpeed `json:"recent"`
-	Models             []string      `json:"models"`
-	CompletedRequests  int           `json:"completed_requests"`
-	AvgTokensPerSecond *float64      `json:"avg_tokens_per_second"`
+	Points                   []SpeedPoint    `json:"points"`
+	Active                   []ActiveSpeed   `json:"active"`
+	Recent                   []ActiveSpeed   `json:"recent"`
+	Models                   []string        `json:"models"`
+	CompletedRequests        int             `json:"completed_requests"`
+	AvgTokensPerSecond       *float64        `json:"avg_tokens_per_second"`
+	AvgFirstVisibleLatencyMS *float64        `json:"avg_first_visible_latency_ms"`
+	Tools                    []ToolAggregate `json:"tools"`
+}
+
+type ToolAggregate struct {
+	Model              string   `json:"model"`
+	Name               string   `json:"name"`
+	Type               string   `json:"type"`
+	Calls              int64    `json:"calls"`
+	CompletedCalls     int64    `json:"completed_calls"`
+	InputCharacters    int64    `json:"input_characters"`
+	AvgInputDurationMS *float64 `json:"avg_input_duration_ms"`
 }
 
 func (s apiServer) handleSpeeds(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +78,7 @@ func (s apiServer) handleSpeeds(w http.ResponseWriter, r *http.Request) {
 }
 
 func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.Time, models ...string) (SpeedsResponse, error) {
-	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}, Recent: []ActiveSpeed{}, Models: []string{}}
+	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}, Recent: []ActiveSpeed{}, Models: []string{}, Tools: []ToolAggregate{}}
 	selected := map[string]bool{}
 	for _, model := range models {
 		selected[pricing.CanonicalModelName(model)] = true
@@ -70,7 +86,7 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 	available := map[string]bool{}
 	// Include live snapshots independently of the historical range. Compare parsed
 	// timestamps to retain nanosecond precision and handle arbitrary RFC3339 offsets.
-	query := `select response_id,model,request_at,created_at,updated_at,completed,output_tokens,output_tokens_known,output_characters,output_items from response_speed_events where (completed = 1 and julianday(created_at) >= julianday(?)`
+	query := `select response_id,model,request_at,created_at,updated_at,completed,output_tokens,output_tokens_known,output_characters,output_items,first_visible_at,tools_json from response_speed_events where (completed = 1 and julianday(created_at) >= julianday(?)`
 	// SQLite rounds timestamps to milliseconds; widen SQL bounds and apply exact
 	// RFC3339Nano bounds below to avoid losing records adjacent to a boundary.
 	args := []any{window.cutoff.Add(-time.Millisecond).Format(time.RFC3339Nano)}
@@ -89,14 +105,21 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 		point        SpeedPoint
 		requestCount int
 		requestSum   float64
+		visibleCount int
+		visibleSum   float64
 	}
 	groups := map[string]*aggregate{}
 	var sum float64
+	var visibleSum float64
+	var visibleCount int
+	toolGroups := map[string]*ToolAggregate{}
+	toolSums := map[string]float64{}
 	for rows.Next() {
 		var item ActiveSpeed
 		var requestAt string
+		var firstVisibleAt, toolsJSON string
 		var completed bool
-		if err := rows.Scan(&item.ResponseID, &item.Model, &requestAt, &item.CreatedAt, &item.UpdatedAt, &completed, &item.OutputTokens, &item.OutputTokensKnown, &item.OutputCharacters, &item.OutputItems); err != nil {
+		if err := rows.Scan(&item.ResponseID, &item.Model, &requestAt, &item.CreatedAt, &item.UpdatedAt, &completed, &item.OutputTokens, &item.OutputTokensKnown, &item.OutputCharacters, &item.OutputItems, &firstVisibleAt, &toolsJSON); err != nil {
 			return resp, err
 		}
 		created, err := time.Parse(time.RFC3339Nano, item.CreatedAt)
@@ -127,6 +150,14 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			}
 			ms := updated.Sub(request).Seconds() * 1000
 			item.RequestDurationMS = &ms
+			if firstVisibleAt != "" {
+				visible, err := time.Parse(time.RFC3339Nano, firstVisibleAt)
+				if err != nil {
+					return resp, err
+				}
+				latency := visible.Sub(request).Seconds() * 1000
+				item.FirstVisibleLatencyMS = &latency
+			}
 		}
 		if duration > 0 {
 			item.CharactersPerSecond = float64(item.OutputCharacters) / duration
@@ -143,6 +174,38 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 		}
 		if !inRange {
 			continue
+		}
+		if item.FirstVisibleLatencyMS != nil {
+			visibleSum += *item.FirstVisibleLatencyMS
+			visibleCount++
+		}
+		var tools []event.Tool
+		if toolsJSON != "" {
+			if err := json.Unmarshal([]byte(toolsJSON), &tools); err != nil {
+				return resp, err
+			}
+		}
+		for _, tool := range tools {
+			key := item.Model + "\x00" + tool.Name + "\x00" + tool.Type
+			g := toolGroups[key]
+			if g == nil {
+				g = &ToolAggregate{Model: item.Model, Name: tool.Name, Type: tool.Type}
+				toolGroups[key] = g
+			}
+			g.Calls++
+			g.InputCharacters += tool.InputCharacters
+			if tool.FinishedAt != "" {
+				start, err := time.Parse(time.RFC3339Nano, tool.StartedAt)
+				if err != nil {
+					return resp, err
+				}
+				end, err := time.Parse(time.RFC3339Nano, tool.FinishedAt)
+				if err != nil {
+					return resp, err
+				}
+				g.CompletedCalls++
+				toolSums[key] += end.Sub(start).Seconds() * 1000
+			}
 		}
 		if item.OutputTokensKnown {
 			resp.Recent = append(resp.Recent, item)
@@ -171,6 +234,10 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			groups[key] = group
 		}
 		group.point.Requests++
+		if item.FirstVisibleLatencyMS != nil {
+			group.visibleSum += *item.FirstVisibleLatencyMS
+			group.visibleCount++
+		}
 		group.point.AvgTokensPerSecond += *item.TokensPerSecond
 		group.point.AvgDurationMS += item.DurationMS
 		if item.RequestDurationMS != nil {
@@ -196,12 +263,37 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			mean := group.requestSum / float64(group.requestCount)
 			point.AvgRequestDurationMS = &mean
 		}
+		if group.visibleCount > 0 {
+			mean := group.visibleSum / float64(group.visibleCount)
+			point.AvgFirstVisibleLatencyMS = &mean
+		}
 		resp.Points = append(resp.Points, point)
 	}
 	if known > 0 {
 		mean := sum / float64(known)
 		resp.AvgTokensPerSecond = &mean
 	}
+	if visibleCount > 0 {
+		mean := visibleSum / float64(visibleCount)
+		resp.AvgFirstVisibleLatencyMS = &mean
+	}
+	for key, g := range toolGroups {
+		if g.CompletedCalls > 0 {
+			mean := toolSums[key] / float64(g.CompletedCalls)
+			g.AvgInputDurationMS = &mean
+		}
+		resp.Tools = append(resp.Tools, *g)
+	}
+	sort.Slice(resp.Tools, func(i, j int) bool {
+		a, b := resp.Tools[i], resp.Tools[j]
+		if a.Model != b.Model {
+			return a.Model < b.Model
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.Type < b.Type
+	})
 	sort.Slice(resp.Points, func(i, j int) bool {
 		if resp.Points[i].Time == resp.Points[j].Time {
 			return resp.Points[i].Model < resp.Points[j].Model

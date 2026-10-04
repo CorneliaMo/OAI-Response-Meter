@@ -2,7 +2,7 @@ import asyncio
 import unittest
 import json
 
-from addon import ResponseSpeedTracker, UsageMeterAddon, extract_http_usage, extract_websocket_usage
+from addon import PromptVersionTracker, ResponseSpeedTracker, UsageMeterAddon, extract_http_usage, extract_websocket_usage
 
 
 class Obj:
@@ -11,6 +11,66 @@ class Obj:
 
 
 class AddonTest(unittest.TestCase):
+    def test_http_preset_capture_is_scoped(self):
+        addon = UsageMeterAddon()
+        addon.queue = asyncio.Queue()
+        flow = Obj(id="http", request=Obj(host="api.openai.com", path="/v1/responses", method="POST", timestamp_start=1000,
+                   content=json.dumps({"model": "gpt-test", "instructions": "preset", "input": "private input"}).encode()))
+        addon.request(flow)
+        sample = addon.queue.get_nowait()
+        self.assertEqual(sample["text"], "preset")
+        self.assertNotIn("private input", json.dumps(sample))
+        flow.request.host = "example.com"
+        addon.request(flow)
+        self.assertTrue(addon.queue.empty())
+
+    def test_first_visible_ignores_tool_input_and_records_tool_metadata(self):
+        tracker = ResponseSpeedTracker()
+        flow = Obj(id="profile", request=Obj(host="api.openai.com", path="/v1/responses"))
+        def observe(payload, at, client=False):
+            return tracker.observe(flow, payload, Obj(timestamp=at, from_client=client))
+        observe({"type": "response.create"}, 1000, True)
+        observe({"type": "response.created", "response": {"id": "r"}}, 1001)
+        observe({"type": "response.output_item.added", "item": {"id": "tool", "type": "custom_tool_call", "name": "exec"}}, 1002)
+        observe({"type": "response.custom_tool_call_input.delta", "item_id": "tool", "delta": "private command"}, 1003)
+        observe({"type": "response.output_item.done", "item": {"id": "tool", "type": "custom_tool_call", "name": "exec"}}, 1004)
+        observe({"type": "response.output_text.delta", "delta": ""}, 1005)
+        visible = observe({"type": "response.output_text.delta", "delta": "visible"}, 1006)[0]
+        self.assertEqual(visible["first_visible_at"], "1970-01-01T00:16:46Z")
+        final = observe({"type": "response.completed", "response": {"id": "r", "usage": {"output_tokens": 50}}}, 1010)[0]
+        self.assertEqual(final["first_visible_at"], visible["first_visible_at"])
+        self.assertEqual(final["tools"][0]["name"], "exec")
+        self.assertEqual(final["tools"][0]["input_characters"], 15)
+        self.assertEqual(final["tools"][0]["started_at"], "1970-01-01T00:16:42Z")
+        self.assertEqual(final["tools"][0]["finished_at"], "1970-01-01T00:16:44Z")
+        self.assertNotIn("private command", json.dumps(final))
+
+    def test_prompt_capture_is_preset_only_chunked_and_actual_model_scoped(self):
+        tracker = PromptVersionTracker()
+        flow = Obj(id="prompts")
+        text = "preset line\n" * 1200
+        payload = {"type": "response.create", "model": "requested", "input": [
+            {"role": "developer", "type": "message", "content": [{"type": "input_text", "text": text}]},
+            {"role": "developer", "type": "message", "content": "dynamic permissions"},
+            {"role": "user", "content": "private user content"},
+        ]}
+        self.assertEqual(tracker.observe(flow, payload, Obj(timestamp=1000, from_client=True)), [])
+        chunks = tracker.observe(flow, {"type": "response.created", "response": {"id": "r", "model": "actual"}}, Obj(timestamp=1001, from_client=False))
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunk["text"] for chunk in chunks), text)
+        self.assertTrue(all(chunk["model"] == "actual" and len(chunk["text"]) <= 6000 for chunk in chunks))
+        self.assertNotIn("dynamic permissions", json.dumps(chunks))
+        self.assertNotIn("private user content", json.dumps(chunks))
+        payload["instructions"] = "explicit preset"
+        tracker.observe(flow, payload, Obj(timestamp=1002, from_client=True))
+        chunks = tracker.observe(flow, {"type": "response.created", "response": {"id": "r2"}}, Obj(timestamp=1003, from_client=False))
+        self.assertEqual(chunks[0]["text"], "explicit preset")
+        self.assertEqual(chunks[0]["source_label"], "instructions")
+        payload["instructions"] = "x" * (1024 * 1024 + 1)
+        tracker.observe(flow, payload, Obj(timestamp=1004, from_client=True))
+        self.assertEqual(tracker.observe(flow, {"type": "response.created", "response": {"id": "large"}}, Obj(timestamp=1005, from_client=False)), [])
+        self.assertEqual(len(tracker.pending), 0)
+
     def test_speed_ttl_prunes_idle_flow_without_new_messages(self):
         tracker = ResponseSpeedTracker()
         flow = Obj(id="idle", request=Obj(host="api.openai.com", path="/v1/responses"))

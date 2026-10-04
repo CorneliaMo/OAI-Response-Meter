@@ -19,6 +19,7 @@ const (
 	KindUsage DatagramKind = iota + 1
 	KindRateLimits
 	KindSpeed
+	KindPrompt
 )
 
 type Datagram struct {
@@ -26,6 +27,7 @@ type Datagram struct {
 	Usage      Usage
 	RateLimits RateLimits
 	Speed      Speed
+	Prompt     PromptVersion
 }
 
 type Usage struct {
@@ -161,7 +163,17 @@ func DecodeDatagram(data []byte) (Datagram, error) {
 		EventType string `json:"event_type"`
 	}
 	if err := json.Unmarshal(data, &header); err != nil {
-		return Datagram{}, fmt.Errorf("decode datagram: %w", err)
+		return Datagram{}, fmt.Errorf("decode datagram: invalid JSON")
+	}
+	if header.EventType == PromptEventType {
+		var prompt PromptVersion
+		if err := json.Unmarshal(data, &prompt); err != nil {
+			return Datagram{}, fmt.Errorf("decode prompt: invalid JSON")
+		}
+		if err := prompt.Validate(); err != nil {
+			return Datagram{}, err
+		}
+		return Datagram{Kind: KindPrompt, Prompt: prompt}, nil
 	}
 	if header.EventType == SpeedEventType {
 		var speed Speed

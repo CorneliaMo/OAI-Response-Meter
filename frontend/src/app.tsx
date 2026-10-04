@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
+import { diffLines } from "diff";
 import { detectLocale, locales, messages, type Locale } from "./i18n";
 
-type TabValue = "overview" | "history" | "limits" | "speeds";
+type TabValue = "overview" | "history" | "limits" | "speeds" | "prompts";
 type RangeValue = "day" | "week" | "month" | "year";
 type DisplayMode = "tokens" | "cost";
 type EventSortValue = "ts_desc" | "ts_asc" | "total_desc" | "input_desc" | "output_desc" | "cached_desc" | "reasoning_desc";
@@ -185,6 +186,7 @@ type SpeedPoint = {
   avg_tokens_per_second: number;
   avg_duration_ms: number;
   avg_request_duration_ms: number | null;
+  avg_first_visible_latency_ms: number | null;
 };
 
 type ActiveResponse = {
@@ -194,6 +196,7 @@ type ActiveResponse = {
   updated_at: string;
   duration_ms: number;
   request_duration_ms: number | null;
+  first_visible_latency_ms: number | null;
   output_tokens: number;
   output_tokens_known: boolean;
   output_characters: number;
@@ -209,10 +212,16 @@ type SpeedsResponse = {
   models: string[];
   completed_requests: number;
   avg_tokens_per_second: number | null;
+  avg_first_visible_latency_ms: number | null;
+  tools: { model: string; name: string; type: string; calls: number; completed_calls: number; input_characters: number; avg_input_duration_ms: number | null }[];
 };
 
+type PromptVersion = { model: string; hash: string; source_label: string; first_seen: string; last_seen: string; observations: number; characters: number };
+type PromptsResponse = { models: string[]; versions: PromptVersion[] };
+type FullPrompt = PromptVersion & { text: string };
+
 const ranges: RangeValue[] = ["day", "week", "month", "year"];
-const tabs: TabValue[] = ["overview", "history", "limits", "speeds"];
+const tabs: TabValue[] = ["overview", "history", "limits", "speeds", "prompts"];
 const eventSorts: EventSortValue[] = ["ts_desc", "ts_asc", "total_desc", "input_desc", "output_desc", "cached_desc", "reasoning_desc"];
 const historyPageSize = 25;
 const limitsPageSize = 25;
@@ -265,6 +274,11 @@ export function App() {
   }, [range, fromDate, toDate]);
 
   useEffect(() => {
+    if (activeTab === "prompts") {
+      setError("");
+      setLoading(false);
+      return;
+    }
     if (dateError) {
       setError(dateError);
       setLoading(false);
@@ -431,7 +445,7 @@ export function App() {
           </div>
         </header>
 
-        <section className={`panel controlsPanel${activeTab === "speeds" ? " speedsControls" : ""}`}>
+        {activeTab !== "prompts" ? <section className={`panel controlsPanel${activeTab === "speeds" ? " speedsControls" : ""}`}>
           <div className="segmented">
             {ranges.map((value) => (
               <button className={value === range ? "active" : ""} key={value} onClick={() => setRange(value)} type="button">
@@ -468,10 +482,10 @@ export function App() {
             </button>
           </div>
           <p className="microcopy">{dateError || t.controls.customRangeHint}</p>
-        </section>
+        </section> : null}
 
         {error ? <section className="panel error">{error}</section> : null}
-        {loading && !hasTabData(activeTab, overviewData, historyData, limitsData, speedsData) ? <section className="panel muted">{t.loadingDashboard}</section> : null}
+        {activeTab !== "prompts" && loading && !hasTabData(activeTab, overviewData, historyData, limitsData, speedsData) ? <section className="panel muted">{t.loadingDashboard}</section> : null}
 
         {activeTab === "overview" && overviewData ? <OverviewPanel data={overviewData} displayMode={displayMode} locale={locale} t={t} /> : null}
         {activeTab === "history" ? (
@@ -496,14 +510,119 @@ export function App() {
         ) : null}
         {activeTab === "limits" && limitsData ? <LimitsPanel data={limitsData} limitsOffset={limitsOffset} locale={locale} onOffsetChange={setLimitsOffset} t={t} /> : null}
         {activeTab === "speeds" && speedsData ? <SpeedsPanel data={speedsData} locale={locale} t={t} selectedModels={speedModels} onModelsChange={setSpeedModels} /> : null}
+        <div hidden={activeTab !== "prompts"}><PromptsPanel active={activeTab === "prompts"} locale={locale} t={t} /></div>
       </section>
     </main>
   );
 }
 
+function PromptsPanel({ active, locale, t }: { active: boolean; locale: Locale; t: (typeof messages)[Locale] }) {
+  const [model, setModel] = useState("");
+  const [data, setData] = useState<PromptsResponse | null>(null);
+  const [selections, setSelections] = useState<Record<string, [string, string]>>({});
+  const [texts, setTexts] = useState<[FullPrompt, FullPrompt] | null>(null);
+  const [error, setError] = useState("");
+  const [textError, setTextError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const cache = useRef(new Map<string, FullPrompt>());
+  const pending = useRef(new Map<string, Promise<FullPrompt>>());
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    let inFlight = false;
+    setData(null);
+    setLoading(true);
+    setError("");
+    async function load() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await requestJSON<PromptsResponse>(`/api/prompts?${new URLSearchParams(model ? { model } : {})}`);
+        if (cancelled) return;
+        setData(result);
+        setError("");
+        if (!model && result.models.length) setModel(result.models[0]);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : t.prompts.failed);
+      } finally {
+        inFlight = false;
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    const timer = window.setInterval(load, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [active, model, t.prompts.failed]);
+  const versions = useMemo(() => (data?.versions ?? []).filter((version) => version.model === model).sort((a, b) => Date.parse(b.last_seen) - Date.parse(a.last_seen) || a.hash.localeCompare(b.hash)), [data, model]);
+  const selected = selections[model];
+  const before = selected?.[0] ?? versions[1]?.hash ?? versions[0]?.hash ?? "";
+  const after = selected?.[1] ?? versions[0]?.hash ?? "";
+  useEffect(() => {
+    if (!model || !before || !after || selected) return;
+    setSelections((current) => ({ ...current, [model]: [before, after] }));
+  }, [model, before, after, selected]);
+  useEffect(() => {
+    setTexts(null);
+    setTextError("");
+    if (!active || !model || !before || !after) return;
+    let cancelled = false;
+    function getText(hash: string) {
+      const key = JSON.stringify([model, hash]);
+      const cached = cache.current.get(key);
+      if (cached) return Promise.resolve(cached);
+      const existing = pending.current.get(key);
+      if (existing) return existing;
+      const request = requestJSON<FullPrompt>(`/api/prompt?${new URLSearchParams({ model, hash })}`).then((value) => {
+        cache.current.set(key, value);
+        if (cache.current.size > 16) cache.current.delete(cache.current.keys().next().value!);
+        return value;
+      }).finally(() => pending.current.delete(key));
+      pending.current.set(key, request);
+      return request;
+    }
+    void Promise.all([getText(before), getText(after)]).then((value) => {
+      if (!cancelled) setTexts(value);
+    }).catch((err: unknown) => {
+      if (!cancelled) setTextError(err instanceof Error ? err.message : t.prompts.failed);
+    });
+    return () => { cancelled = true; };
+  }, [active, model, before, after, t.prompts.failed]);
+  const changes = useMemo(() => texts ? diffLines(texts[0].text, texts[1].text, { timeout: 100, maxEditLength: 2000 }) : undefined, [texts]);
+  const label = (version: PromptVersion) => `${new Date(version.last_seen).toLocaleString(locale)} · ${version.source_label} · ${version.hash.slice(0, 12)}`;
+  const selectVersion = (index: number, hash: string) => setSelections((current) => ({ ...current, [model]: index === 0 ? [hash, after] : [before, hash] }));
+  return <>
+    <section className="panel">
+      <p className="microcopy speedsMeaning">{t.prompts.scope}</p>
+      <label><span>{t.filters.model}</span><select value={model} onChange={(event) => setModel(event.target.value)}>
+        {!model ? <option value="">{t.filters.model}</option> : null}
+        {[...new Set([...(data?.models ?? []), ...(model ? [model] : [])])].map((value) => <option key={value}>{value}</option>)}
+      </select></label>
+    </section>
+    {error ? <section className="panel error" role="alert">{error}</section> : null}
+    {loading ? <section className="panel muted" role="status">{t.loadingDashboard}</section> : null}
+    {data ? <section className="panel">
+      <h3>{t.prompts.versions}</h3>
+      <div className="tableWrap"><table><thead><tr>{[t.prompts.versions, t.prompts.source, t.prompts.firstSeen, t.prompts.lastSeen, t.prompts.observations, t.prompts.characters].map((value) => <th key={value}>{value}</th>)}</tr></thead>
+        <tbody>{versions.map((version) => <tr key={version.hash}><td title={version.hash}><code>{version.hash.slice(0, 12)}</code></td><td>{version.source_label}</td><td>{new Date(version.first_seen).toLocaleString(locale)}</td><td>{new Date(version.last_seen).toLocaleString(locale)}</td><td>{formatInt(version.observations, locale)}</td><td>{formatInt(version.characters, locale)}</td></tr>)}
+          {!versions.length ? <tr><td colSpan={6}>{t.prompts.empty}</td></tr> : null}
+        </tbody></table></div>
+    </section> : null}
+    {before && after ? <section className="panel">
+      <div className="promptSelectors">{[before, after].map((hash, index) => <label key={index}><span>{index === 0 ? t.prompts.before : t.prompts.after}</span><select value={hash} onChange={(event) => selectVersion(index, event.target.value)}>
+        {!versions.some((version) => version.hash === hash) ? <option value={hash}>{hash.slice(0, 12)}</option> : null}
+        {versions.map((version) => <option key={version.hash} value={version.hash}>{label(version)}</option>)}
+      </select></label>)}</div>
+      {textError ? <p className="error" role="alert">{textError}</p> : !texts ? <p className="muted" role="status">{t.prompts.loading}</p> : <>
+        {!changes ? <p className="muted">{t.prompts.limited}</p> : before === after ? <p className="muted">{t.prompts.identical}</p> : null}
+        <div className="promptDiff">{[0, 1].map((side) => <div key={side}><h3>{side === 0 ? t.prompts.before : t.prompts.after}</h3><pre aria-label={side === 0 ? t.prompts.before : t.prompts.after}>{changes ? changes.filter((change) => side === 0 ? !change.added : !change.removed).map((change, index) => <span key={index} className={change.added ? "diffAdded" : change.removed ? "diffRemoved" : "diffContext"}>{change.value}</span>) : texts[side].text}</pre></div>)}</div>
+      </>}
+    </section> : null}
+  </>;
+}
+
 function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data: SpeedsResponse; locale: Locale; t: (typeof messages)[Locale]; selectedModels: string[]; onModelsChange: (models: string[]) => void }) {
   const number = (value: number) => value.toLocaleString(locale, { maximumFractionDigits: 2 });
-  const rate = (value: number | null) => value !== null && Number.isFinite(value) ? number(value) : t.tables.unknown;
+  const rate = (value: number | null | undefined) => value != null && Number.isFinite(value) ? number(value) : t.tables.unknown;
   const minute = (value: number) => new Date(value).toLocaleString(locale, {
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
   });
@@ -559,6 +678,7 @@ function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data
       <section className="kpiGrid speedsKpis">
         <article className="kpiCard"><p>{t.speeds.completed}</p><strong>{formatInt(data.completed_requests, locale)}</strong><span>{t.kpi.recordsInRange}</span></article>
         <article className="kpiCard"><p>{t.speeds.average}</p><strong>{rate(data.avg_tokens_per_second)}</strong><span>{t.speeds.tokenUnit}</span></article>
+        <article className="kpiCard"><p>{t.speeds.firstVisibleAverage}</p><strong>{rate(data.avg_first_visible_latency_ms)}</strong><span>{t.speeds.firstVisibleHint}</span></article>
         <article className="kpiCard"><p>{t.speeds.active}</p><strong>{formatInt(data.active.length, locale)}</strong><span>{t.speeds.recentLive}</span></article>
       </section>
       <p className="microcopy speedsMeaning">{t.speeds.meaning}</p>
@@ -566,7 +686,7 @@ function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data
       <section className="panel">
         <div className="panelHeader"><h3>{t.speeds.recent}</h3><p className="microcopy">{t.speeds.recentHint}</p></div>
         <div className="tableWrap"><table>
-          <thead><tr>{[t.speeds.created, t.speeds.finished, t.tables.model, t.speeds.responseId, t.speeds.elapsed, t.speeds.requestElapsed, t.speeds.outputTokens, t.speeds.finalRate, t.speeds.outputCharacters, t.speeds.outputItems].map((label) => <th key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{[t.speeds.created, t.speeds.finished, t.tables.model, t.speeds.responseId, t.speeds.elapsed, t.speeds.requestElapsed, t.speeds.firstVisible, t.speeds.outputTokens, t.speeds.finalRate, t.speeds.outputCharacters, t.speeds.outputItems].map((label) => <th key={label}>{label}</th>)}</tr></thead>
           <tbody>{data.recent.map((item) => <tr key={item.response_id}>
             <td>{new Date(item.created_at).toLocaleString(locale, { hour12: false })}</td>
             <td>{new Date(item.updated_at).toLocaleString(locale, { hour12: false })}</td>
@@ -574,9 +694,19 @@ function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data
             <td title={item.response_id}>{item.response_id.length > 24 ? `${item.response_id.slice(0, 12)}...${item.response_id.slice(-8)}` : item.response_id}</td>
             <td>{number(item.duration_ms / 1000)}</td>
             <td>{item.request_duration_ms === null ? t.tables.unknown : number(item.request_duration_ms / 1000)}</td>
+            <td>{rate(item.first_visible_latency_ms)}</td>
             <td>{formatInt(item.output_tokens, locale)}</td><td>{rate(item.tokens_per_second)}</td>
             <td>{formatInt(item.output_characters, locale)}</td><td>{formatInt(item.output_items, locale)}</td>
-          </tr>)}{!data.recent.length ? <tr><td colSpan={10} className="emptyLine">{t.speeds.noRecent}</td></tr> : null}</tbody>
+          </tr>)}{!data.recent.length ? <tr><td colSpan={11} className="emptyLine">{t.speeds.noRecent}</td></tr> : null}</tbody>
+        </table></div>
+      </section>
+      <section className="panel">
+        <div className="panelHeader"><h3>{t.speeds.tools}</h3><p className="microcopy">{t.speeds.toolsHint}</p></div>
+        <div className="tableWrap"><table>
+          <thead><tr>{[t.tables.model, t.speeds.toolName, t.speeds.toolType, t.speeds.calls, t.speeds.completedCalls, t.speeds.inputCharacters, t.speeds.inputDuration].map((label) => <th key={label}>{label}</th>)}</tr></thead>
+          <tbody>{(data.tools ?? []).map((tool) => <tr key={JSON.stringify([tool.model, tool.name, tool.type])}>
+            <td>{tool.model}</td><td><strong>{tool.name || t.tables.unknown}</strong></td><td>{tool.type}</td><td>{formatInt(tool.calls, locale)}</td><td>{formatInt(tool.completed_calls, locale)}</td><td>{formatInt(tool.input_characters, locale)}</td><td>{rate(tool.avg_input_duration_ms)}</td>
+          </tr>)}{!data.tools?.length ? <tr><td colSpan={7} className="emptyLine">{t.speeds.noTools}</td></tr> : null}</tbody>
         </table></div>
       </section>
       <section className="panel">

@@ -21,6 +21,9 @@ const speedTableSQL = `create table if not exists response_speed_events (
 const ActiveSpeedTTL = time.Hour
 
 func (s *Store) PruneActiveSpeeds(ctx context.Context, now time.Time) error {
+	s.promptMu.Lock()
+	s.prunePromptAssemblies(now)
+	s.promptMu.Unlock()
 	_, err := s.db.ExecContext(ctx, `delete from response_speed_events where completed = 0 and julianday(created_at) <= julianday(?)`, now.Add(-ActiveSpeedTTL).Format(time.RFC3339Nano))
 	return err
 }
@@ -34,7 +37,34 @@ func InitSpeedSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	rows, err := db.QueryContext(ctx, `pragma table_info(response_speed_events)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, kind string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notnull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{"first_visible_at", "tools_json"} {
+		if !columns[column] {
+			if _, err := db.ExecContext(ctx, `alter table response_speed_events add column `+column+` text not null default ''`); err != nil && !isDuplicateColumn(err) {
+				return err
+			}
+		}
+	}
+	return InitPromptSchema(ctx, db)
 }
 
 func (s *Store) WriteSpeedBatch(ctx context.Context, events []event.Speed) (WriteResult, error) {
@@ -71,11 +101,15 @@ func (s *Store) WriteSpeedBatch(ctx context.Context, events []event.Speed) (Writ
 				continue
 			}
 		}
-		_, err = tx.ExecContext(ctx, `insert into response_speed_events values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		tools, err := json.Marshal(item.Tools)
+		if err != nil {
+			return WriteResult{}, err
+		}
+		_, err = tx.ExecContext(ctx, `insert into response_speed_events (response_id,ts,source,transport,host,path,model,request_at,created_at,updated_at,completed,output_tokens,output_tokens_known,output_characters,output_items,first_visible_at,tools_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   on conflict(response_id) do update set ts=excluded.ts,source=excluded.source,transport=excluded.transport,host=excluded.host,path=excluded.path,
   model=excluded.model,request_at=excluded.request_at,created_at=excluded.created_at,updated_at=excluded.updated_at,completed=excluded.completed,
-  output_tokens=excluded.output_tokens,output_tokens_known=excluded.output_tokens_known,output_characters=excluded.output_characters,output_items=excluded.output_items`,
-			item.ResponseID, item.Timestamp, item.Source, item.Transport, item.Host, item.Path, item.Model, item.RequestAt, item.CreatedAt, item.UpdatedAt, item.Completed, item.OutputTokens, item.OutputTokensKnown, item.OutputCharacters, item.OutputItems)
+  output_tokens=excluded.output_tokens,output_tokens_known=excluded.output_tokens_known,output_characters=excluded.output_characters,output_items=excluded.output_items,first_visible_at=excluded.first_visible_at,tools_json=excluded.tools_json`,
+			item.ResponseID, item.Timestamp, item.Source, item.Transport, item.Host, item.Path, item.Model, item.RequestAt, item.CreatedAt, item.UpdatedAt, item.Completed, item.OutputTokens, item.OutputTokensKnown, item.OutputCharacters, item.OutputItems, item.FirstVisibleAt, string(tools))
 		if err != nil {
 			return WriteResult{}, err
 		}

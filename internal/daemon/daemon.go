@@ -29,6 +29,7 @@ type Counters struct {
 	Duplicates       uint64
 	RateLimitWritten uint64
 	SpeedWritten     uint64
+	PromptWritten    uint64
 	Invalid          uint64
 	WriteError       uint64
 }
@@ -45,6 +46,7 @@ type EventStore interface {
 	WriteBatch(context.Context, []event.Usage) (store.WriteResult, error)
 	WriteRateLimitBatch(context.Context, []event.RateLimits) (store.WriteResult, error)
 	WriteSpeedBatch(context.Context, []event.Speed) (store.WriteResult, error)
+	WritePromptBatch(context.Context, []event.PromptVersion) (store.WriteResult, error)
 	PruneActiveSpeeds(context.Context, time.Time) error
 }
 
@@ -102,8 +104,25 @@ func (d *Daemon) Run(ctx context.Context) error {
 	usageBatch := make([]event.Usage, 0, d.config.BatchSize)
 	rateLimitBatch := make([]event.RateLimits, 0, d.config.BatchSize)
 	speedBatch := make([]event.Speed, 0, d.config.BatchSize)
+	promptBatch := make([]event.PromptVersion, 0, d.config.BatchSize)
 
 	flush := func() {
+		if len(promptBatch) > 0 {
+			writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			result, err := d.store.WritePromptBatch(writeCtx, promptBatch)
+			if err != nil {
+				d.add(func(c *Counters) { c.WriteError++ })
+				d.logf("write prompt failed batch=%d", len(promptBatch))
+			} else {
+				d.add(func(c *Counters) {
+					c.PromptWritten += uint64(result.Inserted)
+					c.Duplicates += uint64(result.Duplicates)
+				})
+				d.logf("write prompt batch=%d inserted=%d duplicates=%d", len(promptBatch), result.Inserted, result.Duplicates)
+			}
+			cancel()
+			promptBatch = make([]event.PromptVersion, 0, d.config.BatchSize)
+		}
 		if len(speedBatch) > 0 {
 			writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			result, err := d.store.WriteSpeedBatch(writeCtx, speedBatch)
@@ -142,6 +161,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return err
 		case item := <-events:
 			switch item.Kind {
+			case event.KindPrompt:
+				promptBatch = append(promptBatch, item.Prompt)
 			case event.KindSpeed:
 				speedBatch = append(speedBatch, item.Speed)
 			case event.KindUsage:
@@ -149,7 +170,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			case event.KindRateLimits:
 				rateLimitBatch = append(rateLimitBatch, item.RateLimits)
 			}
-			if len(usageBatch)+len(rateLimitBatch)+len(speedBatch) >= d.config.BatchSize {
+			if len(usageBatch)+len(rateLimitBatch)+len(speedBatch)+len(promptBatch) >= d.config.BatchSize {
 				flush()
 			}
 		case <-ticker.C:
@@ -191,7 +212,7 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 		item, err := event.DecodeDatagram(buffer[:n])
 		if err != nil {
 			d.add(func(c *Counters) { c.Invalid++ })
-			d.logf("invalid datagram bytes=%d error=%v", n, err)
+			d.logf("invalid datagram bytes=%d", n)
 			continue
 		}
 		d.logDatagram(item)
@@ -205,6 +226,8 @@ func (d *Daemon) readLoop(ctx context.Context, conn *net.UnixConn, events chan<-
 
 func (d *Daemon) logDatagram(item event.Datagram) {
 	switch item.Kind {
+	case event.KindPrompt:
+		d.logf("received prompt_version hash=%s chunk_index=%d chunk_count=%d", item.Prompt.Hash, item.Prompt.ChunkIndex, item.Prompt.ChunkCount)
 	case event.KindSpeed:
 		speed := item.Speed
 		d.logf("received response_speed response_id=%s model=%s transport=%s host=%s path=%s created_at=%s updated_at=%s completed=%t output_tokens=%d output_tokens_known=%t output_characters=%d output_items=%d", speed.ResponseID, speed.Model, speed.Transport, speed.Host, speed.Path, speed.CreatedAt, speed.UpdatedAt, speed.Completed, speed.OutputTokens, speed.OutputTokensKnown, speed.OutputCharacters, speed.OutputItems)

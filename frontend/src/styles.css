@@ -198,7 +198,33 @@ label span {
 }
 
 .kpiGrid.speedsKpis {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.promptSelectors,
+.promptDiff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.promptDiff > div { min-width: 0; }
+.promptDiff pre {
+  max-width: none;
+  max-height: 640px;
+  margin-bottom: 0;
+  border: 1px solid #d8dee4;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  tab-size: 4;
+}
+.diffAdded { background: #dafbe1; color: #116329; }
+.diffRemoved { background: #ffebe9; color: #a40e26; text-decoration: line-through; }
+
+@media (max-width: 760px) {
+  .promptSelectors, .promptDiff { grid-template-columns: minmax(0, 1fr); }
 }
 
 .speedsMeaning {
@@ -550,7 +576,7 @@ pre {
   }
 
   .sidebarTabs {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .sidebarMeta {

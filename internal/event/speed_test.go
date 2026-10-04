@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestSpeedDatagram(t *testing.T) {
 	wire["content"] = "must not persist"
 	data, _ = json.Marshal(wire)
 	got, err := DecodeDatagram(data)
-	if err != nil || got.Kind != KindSpeed || got.Speed != s {
+	if err != nil || got.Kind != KindSpeed || !reflect.DeepEqual(got.Speed, s) {
 		t.Fatalf("decode = %+v, %v", got, err)
 	}
 	line, err := got.Speed.MarshalJSONLine()

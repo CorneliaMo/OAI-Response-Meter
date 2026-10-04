@@ -331,6 +331,8 @@ func newHandler(config Config, now func() time.Time) (http.Handler, *sql.DB, err
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/summary", server.handleSummary)
 	mux.HandleFunc("/api/speeds", server.handleSpeeds)
+	mux.HandleFunc("/api/prompts", server.handlePrompts)
+	mux.HandleFunc("/api/prompt", server.handlePrompt)
 	mux.HandleFunc("/api/timeseries", server.handleTimeseries)
 	mux.HandleFunc("/api/models", server.handleModels)
 	mux.HandleFunc("/api/chains", server.handleChains)

@@ -8,14 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cornelia/oai-response-meter/internal/event"
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db    *sql.DB
-	jsonl *os.File
+	db         *sql.DB
+	jsonl      *os.File
+	promptMu   sync.Mutex
+	assemblies map[string]*promptAssembly
 }
 
 type WriteResult struct {
