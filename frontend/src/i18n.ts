@@ -224,11 +224,6 @@ export const messages = {
       initialUsed: (cost: string, ratio: string) => `${cost} initial used, ${ratio}`,
     },
     speeds: {
-      distributions: "Response distributions by model",
-      metric: "Metric",
-      sampleCount: "Samples",
-      mean: "Mean",
-      percentileHint: "Individual completed responses · nearest-rank percentiles · unavailable measurements excluded",
       firstVisibleAverage: "Average first-visible latency",
       firstVisible: "First-visible latency (ms)",
       firstVisibleHint: "ms · known request-to-first-text measurements",
@@ -503,11 +498,6 @@ export const messages = {
       initialUsed: (cost: string, ratio: string) => `初始已用 ${cost}，${ratio}`,
     },
     speeds: {
-      distributions: "各模型响应统计分布",
-      metric: "指标",
-      sampleCount: "样本数",
-      mean: "平均值",
-      percentileHint: "单次已结束响应 · 最近秩分位数 · 排除缺失测量值",
       models: "模型",
       firstVisibleAverage: "平均首次可见延迟",
       firstVisible: "首次可见延迟（毫秒）",

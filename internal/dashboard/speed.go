@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -43,50 +42,14 @@ type ActiveSpeed struct {
 }
 
 type SpeedsResponse struct {
-	Points                   []SpeedPoint      `json:"points"`
-	Active                   []ActiveSpeed     `json:"active"`
-	Recent                   []ActiveSpeed     `json:"recent"`
-	Models                   []string          `json:"models"`
-	CompletedRequests        int               `json:"completed_requests"`
-	AvgTokensPerSecond       *float64          `json:"avg_tokens_per_second"`
-	AvgFirstVisibleLatencyMS *float64          `json:"avg_first_visible_latency_ms"`
-	P50TokensPerSecond       *float64          `json:"p50_tokens_per_second"`
-	P95TokensPerSecond       *float64          `json:"p95_tokens_per_second"`
-	P50FirstVisibleLatencyMS *float64          `json:"p50_first_visible_latency_ms"`
-	P95FirstVisibleLatencyMS *float64          `json:"p95_first_visible_latency_ms"`
-	ModelStats               []ModelSpeedStats `json:"model_stats"`
-	Tools                    []ToolAggregate   `json:"tools"`
-}
-
-type SpeedDistribution struct {
-	Samples int      `json:"samples"`
-	Mean    *float64 `json:"mean"`
-	P50     *float64 `json:"p50"`
-	P95     *float64 `json:"p95"`
-}
-
-type ModelSpeedStats struct {
-	Model               string            `json:"model"`
-	OutputSpeed         SpeedDistribution `json:"output_speed"`
-	FirstVisibleLatency SpeedDistribution `json:"first_visible_latency"`
-}
-
-// Nearest-rank percentiles operate on individual responses, not minute means.
-func speedDistribution(values []float64) SpeedDistribution {
-	d := SpeedDistribution{Samples: len(values)}
-	if len(values) == 0 {
-		return d
-	}
-	sort.Float64s(values)
-	var sum float64
-	for _, value := range values {
-		sum += value
-	}
-	mean := sum / float64(len(values))
-	p50 := values[int(math.Ceil(float64(len(values))*0.50))-1]
-	p95 := values[int(math.Ceil(float64(len(values))*0.95))-1]
-	d.Mean, d.P50, d.P95 = &mean, &p50, &p95
-	return d
+	Points                   []SpeedPoint    `json:"points"`
+	Active                   []ActiveSpeed   `json:"active"`
+	Recent                   []ActiveSpeed   `json:"recent"`
+	Models                   []string        `json:"models"`
+	CompletedRequests        int             `json:"completed_requests"`
+	AvgTokensPerSecond       *float64        `json:"avg_tokens_per_second"`
+	AvgFirstVisibleLatencyMS *float64        `json:"avg_first_visible_latency_ms"`
+	Tools                    []ToolAggregate `json:"tools"`
 }
 
 type ToolAggregate struct {
@@ -115,10 +78,7 @@ func (s apiServer) handleSpeeds(w http.ResponseWriter, r *http.Request) {
 }
 
 func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.Time, models ...string) (SpeedsResponse, error) {
-	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}, Recent: []ActiveSpeed{}, Models: []string{}, Tools: []ToolAggregate{}, ModelStats: []ModelSpeedStats{}}
-	type samples struct{ speed, latency []float64 }
-	byModel := map[string]*samples{}
-	var speedSamples, latencySamples []float64
+	resp := SpeedsResponse{Points: []SpeedPoint{}, Active: []ActiveSpeed{}, Recent: []ActiveSpeed{}, Models: []string{}, Tools: []ToolAggregate{}}
 	selected := map[string]bool{}
 	for _, model := range models {
 		selected[pricing.CanonicalModelName(model)] = true
@@ -215,14 +175,7 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 		if !inRange {
 			continue
 		}
-		modelSamples := byModel[item.Model]
-		if modelSamples == nil {
-			modelSamples = &samples{}
-			byModel[item.Model] = modelSamples
-		}
 		if item.FirstVisibleLatencyMS != nil {
-			latencySamples = append(latencySamples, *item.FirstVisibleLatencyMS)
-			modelSamples.latency = append(modelSamples.latency, *item.FirstVisibleLatencyMS)
 			visibleSum += *item.FirstVisibleLatencyMS
 			visibleCount++
 		}
@@ -272,8 +225,6 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 			continue
 		}
 		resp.CompletedRequests++
-		speedSamples = append(speedSamples, *item.TokensPerSecond)
-		modelSamples.speed = append(modelSamples.speed, *item.TokensPerSecond)
 		local := created.In(window.location)
 		bucket := local.Truncate(time.Minute).Format(time.RFC3339)
 		key := bucket + "\x00" + item.Model
@@ -326,16 +277,6 @@ func querySpeeds(ctx context.Context, db *sql.DB, window queryWindow, now time.T
 		mean := visibleSum / float64(visibleCount)
 		resp.AvgFirstVisibleLatencyMS = &mean
 	}
-	speedDist, latencyDist := speedDistribution(speedSamples), speedDistribution(latencySamples)
-	resp.P50TokensPerSecond, resp.P95TokensPerSecond = speedDist.P50, speedDist.P95
-	resp.P50FirstVisibleLatencyMS, resp.P95FirstVisibleLatencyMS = latencyDist.P50, latencyDist.P95
-	for model, values := range byModel {
-		if len(values.speed) == 0 && len(values.latency) == 0 {
-			continue
-		}
-		resp.ModelStats = append(resp.ModelStats, ModelSpeedStats{Model: model, OutputSpeed: speedDistribution(values.speed), FirstVisibleLatency: speedDistribution(values.latency)})
-	}
-	sort.Slice(resp.ModelStats, func(i, j int) bool { return resp.ModelStats[i].Model < resp.ModelStats[j].Model })
 	for key, g := range toolGroups {
 		if g.CompletedCalls > 0 {
 			mean := toolSums[key] / float64(g.CompletedCalls)

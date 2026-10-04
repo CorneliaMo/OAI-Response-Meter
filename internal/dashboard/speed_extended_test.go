@@ -74,12 +74,6 @@ func TestSpeedFirstVisibleAndFinalizedToolAggregation(t *testing.T) {
 	if len(resp.Tools) != 1 {
 		t.Fatalf("tools=%+v", resp.Tools)
 	}
-	if resp.P50TokensPerSecond == nil || *resp.P50TokensPerSecond != 2 || *resp.P95TokensPerSecond != 2 || *resp.P50FirstVisibleLatencyMS != 1250 || *resp.P95FirstVisibleLatencyMS != 2000 {
-		t.Fatalf("percentiles=%+v", resp)
-	}
-	if len(resp.ModelStats) != 1 || resp.ModelStats[0].Model != "gpt-5" || resp.ModelStats[0].OutputSpeed.Samples != 2 || resp.ModelStats[0].FirstVisibleLatency.Samples != 2 {
-		t.Fatalf("model stats=%+v", resp.ModelStats)
-	}
 	tool := resp.Tools[0]
 	if tool.Model != "gpt-5" || tool.Calls != 3 || tool.CompletedCalls != 2 || tool.InputCharacters != 60 || tool.AvgInputDurationMS == nil || *tool.AvgInputDurationMS != 1500 {
 		t.Fatalf("tool=%+v", tool)
@@ -93,17 +87,11 @@ func TestSpeedFirstVisibleAndFinalizedToolAggregation(t *testing.T) {
 		t.Fatalf("active=%+v", resp.Active)
 	}
 	mini := query("/api/speeds?range=day&model=gpt-5-mini")
-	if len(mini.ModelStats) != 1 || mini.ModelStats[0].OutputSpeed.Samples != 1 || mini.ModelStats[0].FirstVisibleLatency.P95 != nil || mini.P95FirstVisibleLatencyMS != nil {
-		t.Fatalf("mini distribution=%+v", mini)
-	}
 	if mini.AvgFirstVisibleLatencyMS != nil || len(mini.Tools) != 1 || mini.Tools[0].Calls != 2 {
 		t.Fatalf("mini=%+v", mini)
 	}
 	empty := query("/api/speeds?from=2026-10-02&to=2026-10-02&tz=UTC")
 	if len(empty.Tools) != 0 || empty.AvgFirstVisibleLatencyMS != nil {
 		t.Fatalf("outside=%+v", empty)
-	}
-	if len(empty.ModelStats) != 0 || empty.P50TokensPerSecond != nil || empty.P95FirstVisibleLatencyMS != nil {
-		t.Fatalf("empty distribution=%+v", empty)
 	}
 }

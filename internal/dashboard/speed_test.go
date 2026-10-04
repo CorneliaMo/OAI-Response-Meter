@@ -58,9 +58,6 @@ func TestSpeedsMeansTimezoneAndActive(t *testing.T) {
 	if resp.CompletedRequests != 2 || resp.AvgTokensPerSecond == nil || *resp.AvgTokensPerSecond != 15 || len(resp.Points) != 1 {
 		t.Fatalf("resp=%+v", resp)
 	}
-	if resp.P50TokensPerSecond == nil || *resp.P50TokensPerSecond != 10 || resp.P95TokensPerSecond == nil || *resp.P95TokensPerSecond != 20 {
-		t.Fatalf("percentiles must use responses, not minute means: %+v", resp)
-	}
 	p := resp.Points[0]
 	if p.Time != "2026-10-04T00:00:00+08:00" || p.Model != "gpt-5" || p.Requests != 2 || p.AvgTokensPerSecond != 15 || p.AvgDurationMS != 6000 || p.AvgRequestDurationMS == nil || *p.AvgRequestDurationMS != 3000 {
 		t.Fatalf("point=%+v", p)

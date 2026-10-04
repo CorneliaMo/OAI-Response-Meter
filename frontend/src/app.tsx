@@ -189,8 +189,6 @@ type SpeedPoint = {
   avg_first_visible_latency_ms: number | null;
 };
 
-type SpeedDistribution = { samples: number; mean: number | null; p50: number | null; p95: number | null };
-
 type ActiveResponse = {
   response_id: string;
   model: string;
@@ -215,11 +213,6 @@ type SpeedsResponse = {
   completed_requests: number;
   avg_tokens_per_second: number | null;
   avg_first_visible_latency_ms: number | null;
-  p50_tokens_per_second: number | null;
-  p95_tokens_per_second: number | null;
-  p50_first_visible_latency_ms: number | null;
-  p95_first_visible_latency_ms: number | null;
-  model_stats: { model: string; output_speed: SpeedDistribution; first_visible_latency: SpeedDistribution }[];
   tools: { model: string; name: string; type: string; calls: number; completed_calls: number; input_characters: number; avg_input_duration_ms: number | null }[];
 };
 
@@ -684,23 +677,12 @@ function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data
       </section>
       <section className="kpiGrid speedsKpis">
         <article className="kpiCard"><p>{t.speeds.completed}</p><strong>{formatInt(data.completed_requests, locale)}</strong><span>{t.kpi.recordsInRange}</span></article>
-        <article className="kpiCard"><p>{t.speeds.average}</p><strong>{rate(data.avg_tokens_per_second)}</strong><span>{t.speeds.tokenUnit}</span><span>P50 {rate(data.p50_tokens_per_second)} · P95 {rate(data.p95_tokens_per_second)}</span></article>
-        <article className="kpiCard"><p>{t.speeds.firstVisibleAverage}</p><strong>{rate(data.avg_first_visible_latency_ms)}</strong><span>{t.speeds.firstVisibleHint}</span><span>P50 {rate(data.p50_first_visible_latency_ms)} · P95 {rate(data.p95_first_visible_latency_ms)}</span></article>
+        <article className="kpiCard"><p>{t.speeds.average}</p><strong>{rate(data.avg_tokens_per_second)}</strong><span>{t.speeds.tokenUnit}</span></article>
+        <article className="kpiCard"><p>{t.speeds.firstVisibleAverage}</p><strong>{rate(data.avg_first_visible_latency_ms)}</strong><span>{t.speeds.firstVisibleHint}</span></article>
         <article className="kpiCard"><p>{t.speeds.active}</p><strong>{formatInt(data.active.length, locale)}</strong><span>{t.speeds.recentLive}</span></article>
       </section>
       <p className="microcopy speedsMeaning">{t.speeds.meaning}</p>
       {data.points.length ? <ChartPanel title={t.speeds.trend} subtitle={t.speeds.minuteMeans} option={option} /> : <section className="panel muted">{t.speeds.noTiming}</section>}
-      <section className="panel">
-        <div className="panelHeader"><h3>{t.speeds.distributions}</h3><p className="microcopy">{t.speeds.percentileHint}</p></div>
-        <div className="tableWrap"><table>
-          <thead><tr><th>{t.tables.model}</th><th>{t.speeds.metric}</th><th>{t.speeds.sampleCount}</th><th>{t.speeds.mean}</th><th>P50</th><th>P95</th></tr></thead>
-          <tbody>{(data.model_stats ?? []).flatMap((item) => [
-            { key: "speed", label: t.speeds.tokenUnit, values: item.output_speed },
-            { key: "latency", label: t.speeds.firstVisible, values: item.first_visible_latency },
-          ].map((metric) => <tr key={`${item.model}-${metric.key}`}><td><strong>{item.model}</strong></td><td>{metric.label}</td><td>{formatInt(metric.values.samples, locale)}</td><td>{rate(metric.values.mean)}</td><td>{rate(metric.values.p50)}</td><td>{rate(metric.values.p95)}</td></tr>))}
-          {!data.model_stats?.length ? <tr><td colSpan={6} className="emptyLine">{t.speeds.noRecent}</td></tr> : null}</tbody>
-        </table></div>
-      </section>
       <section className="panel">
         <div className="panelHeader"><h3>{t.speeds.recent}</h3><p className="microcopy">{t.speeds.recentHint}</p></div>
         <div className="tableWrap"><table>
