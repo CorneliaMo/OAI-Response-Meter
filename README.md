@@ -235,6 +235,13 @@ The speed tab supports multiple model selections and the shared date-range
 filter. It lists the latest 20 completed responses within the creation-time
 range, ordered by completion time. The chart uses equally spaced categories
 for minutes with measurements only; missing minutes do not consume axis space.
+Speed and first-visible latency also report per-model means, P50 and P95 from
+individual response measurements, not from minute means. Percentiles use the
+nearest-rank definition (`ceil(p * N)` in ascending order). Unknown measurements
+are excluded independently for each metric; the model table shows sample counts.
+For speed, P95 represents the faster end of the distribution, not slow-tail
+latency. Empty distributions show no value, and a one-response distribution
+has identical mean, P50 and P95.
 
 Active responses emit metadata snapshots at most once per second. Active response
 progress has a 60-minute TTL from response creation: the addon and daemon prune
