@@ -47,7 +47,7 @@ type TimeseriesPoint = {
 type TimeseriesResponse = {
   range: string;
   bucket: "hour" | "day" | "month";
-  points: TimeseriesPoint[];
+  points: TimeseriesPoint[] | null;
 };
 
 type ModelItem = {
@@ -736,6 +736,7 @@ function SpeedsPanel({ data, locale, t, selectedModels, onModelsChange }: { data
 
 function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; locale: Locale; t: (typeof messages)[Locale] }) {
   const { data, displayMode, locale, t } = props;
+  const points = data.timeseries.points ?? [];
   const kpis = displayMode === "cost"
     ? [
         { label: t.kpi.estimatedCost, value: formatCost(data.summary.cost, locale, t), detail: describeCost(data.summary.cost, locale, t) },
@@ -783,7 +784,7 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
             grid: { top: 34, right: 16, bottom: 32, left: 44 },
             xAxis: {
               type: "category",
-              data: data.timeseries.points.map((point) => formatBucketTime(point.time, data.timeseries.bucket, locale)),
+              data: points.map((point) => formatBucketTime(point.time, data.timeseries.bucket, locale)),
               axisLabel: { color: "#57606a", hideOverlap: true },
             },
             yAxis: {
@@ -806,7 +807,7 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
                       showSymbol: false,
                       lineStyle: { color: "#1f6feb", width: 2 },
                       areaStyle: { color: "rgba(31, 111, 235, 0.10)" },
-                      data: data.timeseries.points.map((point) => point.cost.estimated_cost),
+                      data: points.map((point) => point.cost.estimated_cost),
                     },
                   ]
                 : [
@@ -816,7 +817,7 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
                       smooth: false,
                       showSymbol: false,
                       lineStyle: { color: "#1f6feb", width: 2 },
-                      data: data.timeseries.points.map((point) => point.total_tokens),
+                      data: points.map((point) => point.total_tokens),
                     },
                     {
                       name: t.charts.input,
@@ -824,7 +825,7 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
                       smooth: false,
                       showSymbol: false,
                       lineStyle: { color: "#2da44e", width: 2 },
-                      data: data.timeseries.points.map((point) => point.input_tokens),
+                      data: points.map((point) => point.input_tokens),
                     },
                     {
                       name: t.charts.output,
@@ -832,7 +833,7 @@ function OverviewPanel(props: { data: OverviewData; displayMode: DisplayMode; lo
                       smooth: false,
                       showSymbol: false,
                       lineStyle: { color: "#0969da", width: 2 },
-                      data: data.timeseries.points.map((point) => point.output_tokens),
+                      data: points.map((point) => point.output_tokens),
                     },
                   ],
           }}

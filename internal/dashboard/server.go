@@ -768,7 +768,7 @@ order by ts asc
 	}
 	defer rows.Close()
 
-	resp := TimeseriesResponse{Range: window.name, Bucket: bucket}
+	resp := TimeseriesResponse{Range: window.name, Bucket: bucket, Points: []TimeseriesPoint{}}
 	points := map[string]*TimeseriesPoint{}
 	for rows.Next() {
 		var ts string
@@ -917,7 +917,7 @@ func queryChains(ctx context.Context, db *sql.DB, window queryWindow, limit int,
 			chain.transports[row.Transport] = struct{}{}
 		}
 	}
-	resp := ChainsResponse{}
+	resp := ChainsResponse{Items: []ChainItem{}}
 	for _, chain := range chains {
 		for model := range chain.models {
 			chain.item.Models = append(chain.item.Models, model)
@@ -987,7 +987,7 @@ where ts >= ?
 	}
 	defer rows.Close()
 
-	resp := EventsResponse{Limit: limit, Offset: offset}
+	resp := EventsResponse{Limit: limit, Offset: offset, Items: []EventItem{}}
 	for rows.Next() {
 		var item EventItem
 		if err := rows.Scan(
@@ -1111,7 +1111,7 @@ order by ts asc
 	}
 	defer pointRows.Close()
 
-	resp := RateLimitsResponse{Range: window.name, Bucket: "event", Limit: limit, Offset: offset}
+	resp := RateLimitsResponse{Range: window.name, Bucket: "event", Limit: limit, Offset: offset, Points: []RateLimitPoint{}, Items: []RateLimitItem{}}
 	for pointRows.Next() {
 		var ts string
 		var primaryUsed, primaryWindow, secondaryUsed, secondaryWindow int64

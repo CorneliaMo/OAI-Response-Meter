@@ -62,6 +62,40 @@ func TestEmptyDatabaseReturnsZeroSummaryAndEmptyCollections(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
 		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"points", "items", "window_estimates"} {
+			if value, exists := body[field]; exists && string(value) != "[]" {
+				t.Fatalf("%s %s must be [], got %s", path, field, value)
+			}
+		}
+	}
+}
+
+func TestEmptyFilteredCollectionsRemainArrays(t *testing.T) {
+	handler := testHandler(t)
+	for _, path := range []string{
+		"/api/timeseries?from=2040-01-01&to=2040-01-02&bucket=day&tz=UTC",
+		"/api/events?from=2040-01-01&to=2040-01-02&tz=UTC",
+		"/api/chains?from=2040-01-01&to=2040-01-02&tz=UTC",
+		"/api/rate-limits?from=2040-01-01&to=2040-01-02&tz=UTC",
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d %s", path, rec.Code, rec.Body.String())
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"points", "items"} {
+			if value, exists := body[field]; exists && string(value) != "[]" {
+				t.Fatalf("%s %s=%s", path, field, value)
+			}
+		}
 	}
 }
 
