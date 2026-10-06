@@ -139,7 +139,9 @@ def extract_http_usage(flow: Any) -> Optional[dict[str, Any]]:
             return None
         body = raw.decode("utf-8", errors="replace")
 
-    if "text/event-stream" in content_type.lower():
+    # Some Codex HTTP responses omit Content-Type despite carrying SSE frames.
+    prefix = body.lstrip("\ufeff \t\r\n")
+    if "text/event-stream" in content_type.lower() or prefix.startswith(("event:", "data:", ":", "id:", "retry:")):
         completed = _extract_sse_completed(body)
         if completed is None:
             return None
@@ -151,7 +153,7 @@ def extract_http_usage(flow: Any) -> Optional[dict[str, Any]]:
         payload = json.loads(body)
     except json.JSONDecodeError:
         return None
-    return event_from_response(payload, "https-json", host, path)
+    return event_from_response(payload, "https-json", host, path) if isinstance(payload, dict) else None
 
 
 def extract_websocket_usage(flow: Any) -> Optional[dict[str, Any]]:
@@ -534,7 +536,7 @@ def _now_rfc3339() -> str:
 def _extract_sse_completed(body: str) -> Optional[dict[str, Any]]:
     event_name = ""
     data_lines: list[str] = []
-    for raw_line in body.splitlines():
+    for raw_line in body.lstrip("\ufeff").splitlines():
         line = raw_line.rstrip("\r")
         if line == "":
             completed = _complete_sse_event(event_name, data_lines)
@@ -551,7 +553,7 @@ def _extract_sse_completed(body: str) -> Optional[dict[str, Any]]:
 
 
 def _complete_sse_event(event_name: str, data_lines: list[str]) -> Optional[dict[str, Any]]:
-    if event_name != "response.completed" or not data_lines:
+    if event_name not in ("", "response.completed") or not data_lines:
         return None
     data = "\n".join(data_lines)
     if data == "[DONE]":
@@ -559,6 +561,12 @@ def _complete_sse_event(event_name: str, data_lines: list[str]) -> Optional[dict
     try:
         payload = json.loads(data)
     except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not event_name and payload.get("type") != "response.completed":
+        return None
+    if payload.get("type") not in (None, "response.completed"):
         return None
     response = payload.get("response", payload)
     if isinstance(response, dict):

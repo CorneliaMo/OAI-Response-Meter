@@ -185,6 +185,33 @@ class AddonTest(unittest.TestCase):
         self.assertEqual(event["cache_write_tokens"], 0)
         self.assertEqual(event["reasoning_tokens"], 2)
 
+    def test_sse_without_content_type_or_event_label(self):
+        completed = {"type": "response.completed", "response": {
+            "id": "resp_http_fallback", "model": "gpt-test",
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                      "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 3}}}}
+        for host, path in (("chatgpt.com", "/backend-api/codex/responses"),
+                           ("api.openai.com", "/v1/responses")):
+            for headers in ({}, {"content-type": "application/octet-stream"},
+                            {"content-type": "text/event-stream"}):
+                for label in ("", "event: response.completed\r\n"):
+                    with self.subTest(host=host, headers=headers, label=label):
+                        flow = Obj(request=Obj(host=host, path=path), response=Obj(
+                            headers=headers, text="\ufeff: keepalive\r\n\r\n" + label +
+                            "data: " + json.dumps(completed) + "\r\n\r\ndata: [DONE]\r\n\r\n"))
+                        event = extract_http_usage(flow)
+                        self.assertIsNotNone(event)
+                        self.assertEqual(event["transport"], "sse")
+                        self.assertEqual(event["response_id"], "resp_http_fallback")
+                        self.assertEqual(event["cache_write_tokens"], 3)
+
+    def test_sse_skips_invalid_and_non_completed_frames(self):
+        for frame in ("[]", "null", "invalid", '[DONE]',
+                      '{"type":"response.created","response":{"id":"not_done","usage":{}}}'):
+            flow = Obj(request=Obj(host="chatgpt.com", path="/backend-api/codex/responses"),
+                       response=Obj(headers={}, text="data: " + frame + "\n\n"))
+            self.assertIsNone(extract_http_usage(flow))
+
     def test_extract_cache_write_tokens_from_response_completed_payload(self):
         flow = Obj(
             request=Obj(host="api.openai.com", path="/v1/responses"),
